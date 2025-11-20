@@ -6,19 +6,20 @@ export type HistoryLine = {
 };
 
 export type Highlight = {
+  highlightId: string;
   childNodeId: string;
-  start: number;
-  end: number;
+  startOffset: number;
+  endOffset: number;
   text: string;
-  active?: boolean;
+  isActive?: boolean;
 };
 
 export type Message = {
   id: string;
   role: Role;
   text: string;
-  highlights?: Highlight[];
   createdAt: number;
+  highlights?: Highlight[];
 };
 
 export type ParentLink = {
@@ -37,6 +38,7 @@ export type Node = {
   header: string | null;
   parent: ParentLink | null;
   messages: Message[];
+  children?: string[];
 };
 
 export type Session = {
@@ -44,6 +46,8 @@ export type Session = {
   title: string | null;
   rootNodeId: string;
   nodes: Record<string, Node>;
+  createdAt: number;
+  updatedAt: number;
 };
 
 export type BranchingState = {
@@ -58,7 +62,7 @@ export type SelectionDraft = {
   nodeId: string;
   messageId: string;
   text: string;
-  start: number;
-  end: number;
+  startOffset: number;
+  endOffset: number;
   rect: DOMRect;
 };

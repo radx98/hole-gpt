@@ -1265,7 +1265,9 @@ The UI always renders from the in-memory store; browser storage is only a durabl
   * Debounced save mechanism (few hundred ms delay, coalescing multiple updates)
   * Versioning support with `version` field at root level for future migrations
   * Initial load: parse from storage, fallback to empty state if missing/invalid
-* Create global state management (Zustand or React Context + reducer) with complete structure:
+* Create global state management (React Context + reducer preferred) with complete structure:
+  * Implement as BranchingProvider wrapping the app, consumed via useBranchingContext hook
+  * Keep state management pure - UI state (loading, drafts) and LLM calls belong in separate hooks/components
   * Top-level fields: `version`, `activeSessionId`, `activeBranchNodeIds`, `currentNodeId`
   * `sessions` map: session id → session object (containing nodes map)
   * Optional: `lastFocusedNodeId` per session for restoring focus

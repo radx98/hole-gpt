@@ -1,3 +1,5 @@
+# Description
+
 ## 1. Core concept
 
 The app is a ChatGPT-like interface where conversations are **non-linear** and represented as a **tree of nodes**, each node being a **single column** in the UI.
@@ -250,10 +252,33 @@ Columns form an ordered horizontal stack from left (root) to right (deepest node
 **Layout geometry:**
 
 * Each column has a fixed width of approximately 768px (tailwind `max-w-3xl` or similar).
-* Columns are positioned with a constant horizontal offset of 40px between them.
-* Column i (where i=0 is the root) has its left edge positioned at: `left = i × 40px`.
-* The total container width grows as: `768px + (n - 1) × 40px`, where n is the number of columns in the active branch.
-* Due to the small offset relative to column width, columns spatially overlap, but the z-index stacking determines what is visible.
+* **Column position** is defined by the position of its **left edge**.
+* The **standard offset** is 40px (used for edge constraints).
+
+**Column positioning:**
+
+The root column position is always 0 (its left edge aligned with the viewport's left edge). Other columns normally follow each other side by side, with the right edge of the left column aligned with the left edge of the right column (i.e., columns are normally ~768px apart). **However**, column positions are constrained at the viewport edges:
+
+* **Left edge constraint**: On the left, a column cannot go below `standard_offset × z_index`.
+  * In other words, column i cannot have its left edge positioned to the left of `40px × i`.
+  * Example: z_index 1 cannot go farther than 40px from the left viewport edge; z_index 2 cannot go farther than 80px from the left edge.
+
+* **Right edge constraint**: On the right, a column cannot go above `viewport_width - standard_offset × number_of_columns_already_at_their_rightmost_position`.
+  * In other words, the column with the biggest z_index (the rightmost column) cannot have its left edge beyond `viewport_width - 40px` to the right.
+  * The next column after it cannot have its left edge beyond `viewport_width - 80px` to the right, and so on.
+
+**Example:**
+
+There are 10 columns, each 768px wide, with standard_offset = 40px.
+
+By default, the left edge of a column is 768px away from the left edges of its neighbors, but:
+
+* Column 0 can be positioned only within the range of `0px` to `viewport_width - 400px`.
+* Column 1 can be between `40px` and `viewport_width - 360px`.
+* Column 2 can be between `80px` and `viewport_width - 320px`.
+* ...
+* Column 8 can be between `320px` and `viewport_width - 80px`.
+* Column 9 can be between `360px` and `viewport_width - 40px`.
 
 **Center region (columns fully visible):**
 
@@ -263,14 +288,14 @@ Columns form an ordered horizontal stack from left (root) to right (deepest node
 **Left edge behavior:**
 
 * As the user scrolls right, earlier columns on the left slide under their right neighbors due to z-index stacking.
-* Columns that would scroll off-screen to the left are instead clamped to remain partially visible, ensuring they don't go beyond the left viewport edge.
-* When multiple columns are clamped at the left edge, they stack horizontally maintaining their 40px spacing (column 0 showing its leftmost 40px, column 1 showing its leftmost 40px starting 40px from the left edge, and so on).
+* Columns that would scroll off-screen to the left are instead clamped by the left edge constraint (`left_edge >= 40px × z_index`), ensuring they remain partially visible at the left viewport edge.
+* When multiple columns are clamped at the left edge, they stack horizontally maintaining their 40px spacing (column 0 showing at 0px with its leftmost 40px visible, column 1 showing at 40px with its leftmost 40px visible, and so on).
 * These stacked columns show their actual layout and content within the visible 40px-wide slice, not a special collapsed state.
 
 **Right edge behavior:**
 
-* The maximum scroll position is constrained such that when scrolled all the way right, the rightmost column's left edge is positioned 40px from the right viewport edge.
-* At this maximum scroll, the next-to-last column's left edge is positioned 80px from the right edge, the next at 120px, and so on, maintaining their 40px spacing.
+* The maximum scroll position is constrained by the right edge constraint: when scrolled all the way right, the rightmost column's left edge is positioned at `viewport_width - 40px`.
+* At this maximum scroll, the next-to-last column's left edge is at `viewport_width - 80px`, the next at `viewport_width - 120px`, and so on, maintaining their 40px spacing.
 * When multiple columns extend beyond the right viewport edge, they stack horizontally at the right edge, each displaying a 40px-wide slice of their leftmost content.
 * These stacked columns show their actual layout and content within the visible 40px-wide slice.
 
@@ -415,7 +440,7 @@ The top bar is a viewport-wide bar fixed at the top of the viewport. It function
    * Clicking them switches back to those branches and shows one column they lead to but none of the further columns.
    * The top bar updates to reflect the new active branch.
 8. The page itself does not scroll vertically. Each column is its own vertical scroll container, scrolling independently. The currently active column has a floating linear input at the bottom that stays within the viewport as the column's content scrolls.
-9. Horizontally, columns form a stack from left (root) to right (deepest node). Columns are positioned with a constant 40px horizontal offset, creating an overlapping layout. The layout shows as many full columns as fit in the center, with columns that overflow at the viewport edges displaying 40px peeks showing their actual content. Clicking a partially visible column scrolls it into full view.
+9. Horizontally, columns form a stack from left (root) to right (deepest node). Columns normally follow each other side by side (~768px apart), but are constrained at viewport edges by a 40px standard offset, creating an overlapping layout at the edges. The layout shows as many full columns as fit in the center. At the left edge, columns are clamped to positions `40px × z_index` (0px, 40px, 80px, etc.), and at the right edge to `viewport_width - 40px × number_of_columns_from_the_right`. Columns at viewport edges display 40px-wide peeks showing their actual content. Clicking a partially visible column scrolls it into full view.
 
 ---
 
@@ -1222,3 +1247,418 @@ For any turn (linear or context):
    * Persist the updated JSON snapshot (state + sessions) to `localStorage`.
 
 The UI always renders from the in-memory store; browser storage is only a durable snapshot.
+
+---
+
+# Implementation
+
+## Phase 1: Core data layer and state management
+
+* Define the complete data model as TypeScript interfaces:
+  * **Session**: `id`, `title`, `rootNodeId`, `nodes` (map of node id → node object), `createdAt`, `updatedAt`
+  * **Node**: `id`, `depth`, `header`, `parent` (null for root, or object with `parentNodeId`, `parentMessageId`, `selection`), `messages` array, optional `children` array
+  * **Message**: `id`, `role` ("user" | "assistant"), `text`, `createdAt`, `highlights` array
+  * **Highlight** (embedded in messages, not top-level): `highlightId`, `startOffset`, `endOffset`, `text`, `childNodeId`, optional `isActive`
+* Implement browser storage layer:
+  * Single-key localStorage (`"branching_chat_state"`) for entire app state
+  * JSON serialization/deserialization with error handling
+  * Debounced save mechanism (few hundred ms delay, coalescing multiple updates)
+  * Versioning support with `version` field at root level for future migrations
+  * Initial load: parse from storage, fallback to empty state if missing/invalid
+* Create global state management (Zustand or React Context + reducer) with complete structure:
+  * Top-level fields: `version`, `activeSessionId`, `activeBranchNodeIds`, `currentNodeId`
+  * `sessions` map: session id → session object (containing nodes map)
+  * Optional: `lastFocusedNodeId` per session for restoring focus
+  * State update functions for all operations
+* Implement core tree operations and utilities:
+  * Create new session with root node (depth 0, parent null, empty messages, null header)
+  * Add message to existing node (append to messages array)
+  * Create child node with parent link (increment depth, store selection reference)
+  * Build active branch path from root to any node (traverse parent links, reverse)
+  * Switch active branch to different path (update activeBranchNodeIds and currentNodeId)
+  * Update highlight isActive flags based on current branch
+  * Generate unique IDs for sessions, nodes, messages, and highlights
+* Set up persistent vs ephemeral state boundaries:
+  * Persistent: sessions, nodes, messages, highlights, activeBranchNodeIds, currentNodeId, timestamps
+  * Ephemeral (not stored): input field contents, selections, loading states, scroll positions
+
+## Phase 2: Basic single-column UI
+
+* Set up global layout constraints (per §3.1):
+  * White background on page
+  * Page itself (html/body) does not scroll vertically
+  * Helvetica typeface (or system sans-serif fallback) for all text
+  * Thin gray lines to separate UI areas
+* Implement root column component with (per §3.2, §3.3):
+  * Fixed-width container (~768px, max-w-3xl in Tailwind)
+  * Full viewport height below top bar (from top bar bottom to viewport bottom)
+  * Independent vertical scroll container (scrolls within its bounds, not the page)
+  * Additional padding at bottom to prevent linear input overlap with content
+* Create column header area (per §3.3):
+  * AI-generated h3 header displaying node's header text
+  * Fixed at top of the column's scrollable area
+  * Initially null: show gray rounded placeholder block until LLM provides header
+* Create message components (per §3.4):
+  * **User message**: right-aligned, max width ~80% of column width, light gray background, minimal border radius, supports markdown formatting input
+  * **LLM message**: left-aligned, full column width, no background container, markdown rendering (headings, lists, code, emphasis)
+  * Messages display in strict chronological order: user → LLM → user → LLM...
+* Implement linear input field (per §3.2, §3.5):
+  * Positioned at bottom of column, floating above content
+  * White text input area with minimal padding from column edges and bottom
+  * Minimal corner rounding
+  * Placeholder text: "Ask anything"
+  * Integrated Send button on right side of input
+  * Submit triggers: Enter key or Send button click
+  * On send: create user message, send LLM request, append assistant response
+* Create initial empty state for new session (per §3.2):
+  * Centered placeholder block in main area with:
+    * Text: "A new rabbithole entrance is right here"
+    * Lucide "arrow-down" icon below the text
+  * Placeholder disappears permanently after first message is sent
+  * Linear input still visible and functional at bottom
+
+## Phase 3: Top bar and navigation
+
+* Implement fixed top bar (per §3.1, §6):
+  * Viewport-wide bar fixed at top, spans full width
+  * Functions as branch "address line" reflecting current active branch
+  * Thin gray line at bottom edge to separate from main content
+  * Structure from left to right:
+    1. **App name** (far left, uppercase)
+    2. **Slash separator** (`/`)
+    3. **Session segment** containing:
+       * Session name (always equals root node header)
+       * Lucide chevrons-up-down icon
+       * Represents both the session and its root node
+       * Clickable to open session list dropdown
+    4. **Path segments** (if branch has more than root node):
+       * Slash separator before each segment
+       * One segment per node/column along active branch (after root)
+       * Ordered from root to current node
+       * Labels taken from node/column headers
+       * Format: `[APP NAME] / [session name + icon] / [second column title] / [third column title] / ...`
+       * Display-only (not clickable)
+* Create session list dropdown (per §6):
+  * Triggered by clicking session segment (session name + chevrons-up-down icon)
+  * Lists all sessions, each item showing:
+    * Session name (root node header)
+    * Lucide trash-2 button for deletion
+  * Current session is clearly highlighted/distinguished
+  * Clicking a session item:
+    * Switches activeSessionId in data model
+    * Loads the tree for that session
+    * Reconstructs and renders active branch (typically root to last focused node)
+    * Closes the dropdown
+  * Clicking trash-2 button:
+    * Deletes the session from sessions map
+    * If deleted session was active, switch to another session or clear state
+    * Updates localStorage
+* Session title synchronization (per §6):
+  * Session title always equals root node header (they are identical)
+  * When LLM proposes header for root node, session title is set to exactly that string
+  * Session segment displays this synchronized value
+* Dynamic updates:
+  * Top bar path segments update whenever activeBranchNodeIds changes
+  * Number and order of segments always match currently visible columns
+  * Session name updates when root node header is set by LLM
+
+## Phase 4: LLM integration
+
+* Create `/api/chat` endpoint (per §14.4):
+  * Read OpenAI API key from environment (never expose to client)
+  * Accept `{ history, prompt }` payload
+  * Send system message describing expected JSON output
+  * Send `{ history, prompt }` as content of user message to LLM
+  * Parse model's JSON response: `{ header, message }`
+  * Return response object directly to client
+* Implement client-side LLM request builder (per §10.2):
+  * Build history from activeBranchNodeIds (all nodes on current branch)
+  * For each node in order from root to current:
+    * For non-root nodes, insert branch note as first message:
+      * Format: `{ role: "user", text: "[Branch created from previous text: \"<selection.text>\"]" }`
+      * Derived from `node.parent.selection.text`
+    * Append all node messages in chronological order as `{ role, text }`
+  * Set `prompt` to current user input (linear or context)
+  * Send: `{ history: [...], prompt: "..." }`
+* Handle user input submission:
+  * Immediately append user message to current node's messages array
+  * Then send LLM request (user message already in state before request)
+* Handle LLM response (per §10.3):
+  * Parse response: `{ header, message }`
+  * Append assistant message with `role: "assistant"` and `text: message`
+  * If node's `header` is null, set it to response `header`
+  * If this is the root node, also set session title to same string
+  * Update activeBranchNodeIds and currentNodeId in state
+  * Persist entire state to localStorage with debouncing (§9.2)
+* Add loading states and error handling:
+  * Loading indicator while waiting for LLM response
+  * Error handling for network failures
+  * Error handling for malformed responses
+
+## Phase 5: Text selection and context input
+
+* Implement text selection detection (per §5.1):
+  * Listen for selection change events in any message
+  * Validate selection is **non-empty** AND within single message only
+  * If valid, capture selection text and character offsets (startOffset, endOffset)
+  * If valid, show context input; otherwise hide it
+  * Support cancellation by clicking outside or clearing selection
+* Create context input component (per §3.5, §5.1):
+  * A **mini version** of the linear input with **smaller width**
+  * Minimal rounding and styling
+  * Positioned directly **above** selected text, anchored visually to it
+  * Integrated Send button
+  * Submit triggers: Enter key OR Send button click
+  * Auto-focus when appearing
+* Handle context input submission (per §5.2, §11.3):
+  1. **Capture and clear selection:**
+     * Store `parentNodeId` (node containing selection)
+     * Store `parentMessageId` (message containing selection)
+     * Store `selection = { text, startOffset, endOffset }`
+     * Clear/cancel the selection (as if user clicked out or pressed Esc)
+  2. **Create new child node** with structure:
+     * Generate unique `id`
+     * Set `depth = parentNode.depth + 1`
+     * Set `header = null` (placeholder shown until LLM responds)
+     * Set `parent = { parentNodeId, parentMessageId, selection }`
+     * Initialize `messages = []` (empty array)
+     * Add node to sessions map
+  3. **Add highlight to parent message:**
+     * Create highlight entry in parent message's `highlights` array
+     * Include: `highlightId`, `startOffset`, `endOffset`, `text`, `childNodeId` (pointing to new node)
+  4. **Create new column to the right** (per §3.5):
+     * New column becomes last column in active branch
+  5. **Update branch state:**
+     * Take prefix of `activeBranchNodeIds` up to and including `parentNodeId`
+     * Append new node id to end: `activeBranchNodeIds = [...prefix, newNodeId]`
+     * Set `currentNodeId = newNodeId`
+  6. **Show header placeholder:**
+     * Display gray slightly rounded placeholder block for header until LLM responds (§5.2 step 4)
+  7. **Append user message to new node:**
+     * Add user message with context prompt text to new node's `messages` array
+     * This happens BEFORE LLM request is sent
+  8. **Build and send LLM request:**
+     * Build `history` from updated `activeBranchNodeIds` including branch note for new node
+     * Set `prompt` to context input text
+     * Send `{ history, prompt }` to `/api/chat` (using Phase 4 logic)
+  9. **Hide context input**
+  10. **On LLM response** (handled by Phase 4 logic):
+     * Append assistant message to new node
+     * Set node header from response
+     * Persist state with debouncing
+* Render highlights in messages (per §5.3):
+  * Highlights represent selections that **already have branches** (persistent visual marks)
+  * For each highlight in message.highlights array:
+    * Render visual mark on text range (startOffset to endOffset)
+    * **Active highlight** (child node is on current active branch):
+      * Appears **brighter or more saturated**
+      * Child node is displayed in column to the right
+    * **Inactive highlight** (child node NOT on current active branch):
+      * Appears **paler** but still visible
+      * Child node is not currently displayed
+  * Click handlers:
+    * **Clicking inactive highlight:**
+      * Reconstruct path from root to highlight's child node
+      * Update `activeBranchNodeIds` to new path (ending at child node, no further columns)
+      * Set `currentNodeId` to child node
+      * Hide any columns that were to the right of parent
+      * Show child node's column instead
+      * Update all highlight `isActive` flags based on new branch
+      * Clicked highlight becomes active (bright)
+      * Re-render columns for new active branch
+    * **Clicking active highlight** (when multiple branches exist from same selection):
+      * Show small chooser UI to pick specific branch
+      * On choice, apply same logic as inactive highlight click
+
+## Phase 6: Multi-column layout with simple horizontal scroll
+
+Note: This phase implements a simplified multi-column layout with basic side-by-side positioning. Advanced layout features (edge overlapping, clamping) are deferred to Phase 9.
+
+* Implement horizontal column stack:
+  * Render one column per node in activeBranchNodeIds (in order)
+  * Each column positioned side by side with full width (~768px)
+  * Columns arranged left to right: root → deepest
+  * Simple horizontal scrollable container (standard CSS overflow-x: auto)
+  * All columns fully visible when scrolled into view (no partial visibility yet)
+  * Main content area positioned below top bar (from Phase 3)
+* Add visual separation:
+  * Thin vertical gray lines between adjacent columns (per §3.1, §3.3)
+* Set up z-index stacking:
+  * Root column at bottom (z-index: 0)
+  * Each subsequent child layers on top (z-index increments by depth)
+  * Note: Visual effect not apparent in side-by-side layout, but prepares for Phase 9
+* Implement per-column vertical scrolling (per §3.3, §4.2):
+  * Each column is independent vertical scroll container
+  * Column height spans from below top bar to viewport bottom
+  * Content scrolls within column between header and bottom
+  * No vertical sync between columns
+  * Page itself (html/body) does not scroll vertically
+  * Additional padding at bottom of each column to prevent linear input overlap
+* Show/hide linear input based on current column (per §3.3, §3.5):
+  * Only current/focused column shows active linear input
+  * Active input floats at bottom of its column, stays in viewport
+  * Other columns hide their linear inputs completely
+* Implement column focus management (per §4.1):
+  * Click anywhere in column (header, message area, input) to focus it
+  * Focused column has normal appearance
+  * Non-focused columns are 15% paler (reduce opacity or desaturate)
+  * Update currentNodeId in state on focus change
+  * Persist focus change to localStorage
+* Add horizontal scroll behavior (per §4.3, §4.4):
+  * Standard scrollbar on desktop
+  * Horizontal drag/swipe on touch devices
+  * Prevent browser back/forward gesture: overscroll-behavior-x: none on html/body (per §4.4)
+  * Scroll position is NOT persisted (ephemeral state per §8.6)
+
+## Phase 7: Branch switching and highlight interaction
+
+* Implement **inactive highlight** click handler (per §5.3, §11.4):
+  * User clicks a pale (inactive) highlight that points to child node
+  * Reconstruct path from root to clicked highlight's child node:
+    * Follow `parent.parentNodeId` links backwards from child node to root
+    * Reverse the path to get ordered array from root to child
+    * Result: `activeBranchNodeIds = ["node_root", ..., "node_child"]`
+  * Update branch state:
+    * Set `activeBranchNodeIds` to new path (ending at child node)
+    * Set `currentNodeId` to child node id
+  * Update column visibility:
+    * Hide any columns that were to the right of parent column
+    * Show child node's column instead (as last column in branch)
+    * **Other columns remain unchanged** (columns before parent stay visible)
+  * Update `isActive` flags in **all** `message.highlights` across all nodes:
+    * Highlights whose `childNodeId` is in new `activeBranchNodeIds` AND immediately followed on the branch become active (bright)
+    * All other highlights become inactive (pale)
+  * The clicked highlight becomes active (bright)
+  * Re-render columns to match new `activeBranchNodeIds`
+  * **No LLM request is made** - this is pure navigation
+  * Persist changes to localStorage (updated `activeBranchNodeIds`, `currentNodeId`, highlight flags)
+* Implement **active highlight** click handler (per §5.3):
+  * Applies when clicking an active highlight AND either:
+    * Multiple branches exist from the same selection, OR
+    * Multiple highlights intersect at the clicked character
+  * Show small chooser UI to pick specific branch
+  * On user selection from chooser:
+    * Apply same logic as inactive highlight click (above)
+    * Switch to chosen branch
+* Verify highlight appearance updates correctly:
+  * Active highlights appear **brighter or more saturated**
+  * Inactive highlights appear **paler** but still visible
+  * Visual transition on branch switch (smooth feedback)
+
+## Phase 8: URL routing and deep linking
+
+* Set up client-side routing (per §13.1):
+  * **Root route**: `/[root-node-name]`
+    * `[root-node-name]` is derived from the root node's header (slugified for URL safety)
+    * Represents session at root level
+  * **Branch route**: `/[root-node-name]/[end-node-name]`
+    * `[root-node-name]` derived from session root header (slugified)
+    * `[end-node-name]` derived from header of the last (deepest, current) node in active branch (slugified)
+    * Format always reflects: session root (first segment) + current end node of active branch (last segment)
+  * Use a routing library (e.g., React Router, Next.js App Router) for client-side navigation
+* Implement route handling for **root route** (per §13.2):
+  * Parse `/[root-node-name]` from URL
+  * Load session with that root node name
+  * Set `activeBranchNodeIds = [rootNodeId]` (only root node)
+  * Set `currentNodeId = rootNodeId`
+  * Display root column only
+* Implement route handling for **branch route** (per §13.2):
+  * Parse `/[root-node-name]/[end-node-name]` from URL
+  * Load session with that root node name
+  * Find node with header matching `[end-node-name]`
+  * Reconstruct branch from root to that end node:
+    * Follow `parent.parentNodeId` links backwards from end node to root
+    * Reverse to get ordered path from root to end
+  * Set `activeBranchNodeIds` to reconstructed path
+  * Set `currentNodeId` to end node id
+  * Display all columns along the branch
+* Update URL when active branch changes:
+  * When creating new child node (context input submission)
+  * When switching branches (highlight click)
+  * When continuing linearly (if it changes the end node)
+  * Update URL to match new `activeBranchNodeIds` structure
+  * Use slugified header of last node in `activeBranchNodeIds` for `[end-node-name]`
+* Handle invalid/missing routes gracefully:
+  * If root node name not found: redirect to default or show error
+  * If end node name not found: fall back to root route or show error
+  * If slugs are ambiguous: use additional logic (e.g., node IDs in query params if needed)
+* Set initial scroll positions when opening branch routes (per §13.2):
+  * **Horizontal scroll position:**
+    * Scroll all the way to the end (rightmost position)
+    * Deepest (last) column in branch is fully visible on right side of viewport
+    * Earlier columns may appear as full columns or as collapsed edge bars on left (per horizontal layout rules from Phase 9)
+  * **Vertical scroll positions:**
+    * For every column that has a child created from a highlight (i.e., not the last column):
+      * Scroll that column vertically so the highlight that spawned its visible child is **centered** in the column's visible area
+      * Center between the header at top and the bottom input region
+      * This ensures continuity: you can see what was selected to create the next branch
+    * For the last (deepest) column in the branch:
+      * Scroll to the **bottom** so that the latest messages are visible
+      * User sees most recent conversation in the current node
+
+## Phase 9: Advanced horizontal layout with overlapping columns
+
+Note: This phase replaces the simple side-by-side layout from Phase 6 with the advanced overlapping edge behavior described in §4.5.
+
+* Implement layout geometry (per §4.5):
+  * Each column has **fixed width of approximately 768px** (Tailwind max-w-3xl)
+  * **Column position** is defined by the position of its **left edge**
+  * **Standard offset** is 40px (used for edge constraints)
+  * Z-index stacking from Phase 6 (root at bottom, children layer on top) allows left columns to **slide under right neighbors** as scrolling occurs
+* Implement edge constraint system (per §4.5):
+  * **Left edge constraint**: A column cannot have its left edge positioned to the left of `standard_offset × z_index`
+    * Formula: `left_edge >= 40px × z_index`
+    * Example: column with z_index 0 (root) can go to 0px, z_index 1 cannot go farther left than 40px, z_index 2 cannot go farther left than 80px, etc.
+  * **Right edge constraint**: Columns stack at right edge with 40px spacing
+    * The column with biggest z_index (rightmost) cannot have left edge beyond `viewport_width - 40px`
+    * Next column (second-to-last) cannot have left edge beyond `viewport_width - 80px`
+    * Formula: `left_edge <= viewport_width - 40px × (total_columns - z_index)`
+  * **Example with 10 columns** (per §4.5):
+    * Column 0: range `0px` to `viewport_width - 400px`
+    * Column 1: range `40px` to `viewport_width - 360px`
+    * Column 2: range `80px` to `viewport_width - 320px`
+    * ...
+    * Column 8: range `320px` to `viewport_width - 80px`
+    * Column 9: range `360px` to `viewport_width - 40px`
+* Update column positioning logic (per §4.5):
+  * **Root column position is always 0** (left edge aligned with viewport's left edge)
+  * **Normal positioning**: Other columns follow side by side, with right edge of left column aligned with left edge of right column (columns normally ~768px apart)
+  * **Clamped positioning**: When constraints are violated by scrolling, clamp column positions to stay within constraints
+  * Multiple columns stack at edges maintaining 40px spacing
+* Implement center region behavior (per §4.5):
+  * Columns positioned within viewport's visible area and **not overlapped by higher-z-index neighbors** appear fully
+  * Display complete content: header, messages, highlights, linear input (if active)
+  * As many columns as can fit fully in viewport are shown completely
+* Implement left edge behavior (per §4.5):
+  * As user scrolls right, earlier columns on left slide under right neighbors (due to z-index stacking)
+  * Columns that would scroll off-screen are clamped by left edge constraint
+  * When multiple columns clamped at left edge:
+    * They stack horizontally maintaining 40px spacing
+    * Column 0 shows at 0px with leftmost 40px visible
+    * Column 1 shows at 40px with leftmost 40px visible
+    * And so on
+  * **Important**: Stacked columns show their **actual layout and content** within visible 40px-wide slice, **not a special collapsed state**
+* Implement right edge behavior (per §4.5):
+  * Maximum scroll position constrained by right edge constraint
+  * When scrolled all the way right:
+    * Rightmost column's left edge positioned at `viewport_width - 40px`
+    * Next-to-last column's left edge at `viewport_width - 80px`
+    * Next at `viewport_width - 120px`, and so on
+    * Maintains 40px spacing
+  * When multiple columns extend beyond right viewport edge:
+    * They stack horizontally at right edge
+    * Each displays 40px-wide slice of their leftmost content
+  * **Important**: Stacked columns show their **actual layout and content** within visible 40px-wide slice
+* Add click-to-expand for partially visible columns (per §4.5):
+  * Clicking or tapping anywhere in a partially visible column triggers:
+    * Horizontal scroll to bring that column into full view
+    * Focus that column (update currentNodeId)
+* Implement focus point algorithm for scroll-based focus (per §4.1):
+  * As user scrolls horizontally:
+    * Compute how far scroll position is between left and right ends (as percentage from 0% to 100%)
+    * Place invisible **focus point** inside viewport at same percentage between its left and right edges
+    * **Focused column** is always the one that covers this focus point
+    * Update currentNodeId to focused column
+  * User can focus on column without scrolling by clicking/interacting with it (per Phase 6)
+  * **But**: As soon as content is horizontally scrolled for more than 5% of viewport width, scroll algorithm takes control back
+  * This creates smooth focus behavior during scrolling while preserving manual focus control

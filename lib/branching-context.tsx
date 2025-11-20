@@ -57,6 +57,7 @@ type BranchingContextValue = {
   focusNode: (nodeId: string) => void;
   appendMessage: (nodeId: string, message: Message) => void;
   createChildNode: (input: CreateChildNodeInput) => string | null;
+  setNodeHeader: (nodeId: string, header: string | null) => void;
 };
 
 const BranchingContext = createContext<BranchingContextValue | undefined>(
@@ -335,6 +336,44 @@ export const BranchingProvider = ({ children }: { children: ReactNode }) => {
     [],
   );
 
+  const setNodeHeader = useCallback((nodeId: string, header: string | null) => {
+    dispatch({
+      type: "UPDATE",
+      updater: (previous) => {
+        const session = getActiveSession(previous);
+        if (!session) return previous;
+        const node = session.nodes[nodeId];
+        if (!node) return previous;
+        const normalized = header?.trim() ?? null;
+        if (
+          node.header === normalized &&
+          (node.depth !== 0 || session.title === normalized)
+        ) {
+          return previous;
+        }
+        const updatedNode: Node = {
+          ...node,
+          header: normalized,
+        };
+        const updatedSession = {
+          ...session,
+          title: node.depth === 0 ? normalized : session.title,
+          nodes: {
+            ...session.nodes,
+            [nodeId]: updatedNode,
+          },
+        };
+        return {
+          ...previous,
+          sessions: {
+            ...previous.sessions,
+            [session.id]: updatedSession,
+          },
+        };
+      },
+    });
+  }, []);
+
   const value = useMemo(
     () => ({
       state,
@@ -346,6 +385,7 @@ export const BranchingProvider = ({ children }: { children: ReactNode }) => {
       focusNode,
       appendMessage,
       createChildNode,
+      setNodeHeader,
     }),
     [
       appendMessage,
@@ -353,6 +393,7 @@ export const BranchingProvider = ({ children }: { children: ReactNode }) => {
       createSession,
       deleteSession,
       focusNode,
+      setNodeHeader,
       ready,
       setActiveBranch,
       setActiveSession,

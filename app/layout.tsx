@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { BranchingProvider } from "@/lib/branching-context";
 
 export const metadata: Metadata = {
   title: "Create Next App",
@@ -14,7 +15,7 @@ export default function RootLayout({
   return (
     <html lang="en" className="h-full bg-white">
       <body className="antialiased h-full overflow-hidden bg-white text-zinc-900">
-        {children}
+        <BranchingProvider>{children}</BranchingProvider>
       </body>
     </html>
   );

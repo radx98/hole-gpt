@@ -1321,6 +1321,12 @@ The UI always renders from the in-memory store; browser storage is only a durabl
 
 ## Phase 3: Top bar and navigation
 
+* Integrate Phase 1 data layer with Phase 2 UI:
+  * Wrap app/page.tsx with BranchingProvider from lib/branching-context.tsx
+  * Replace local useState (header, messages, hasStarted) with useBranchingContext
+  * Use state.sessions[state.activeSessionId] to access current session and root node
+  * Use appendMessage() to add messages instead of setMessages()
+  * Keep mock completion function temporarily (will be replaced in Phase 4)
 * Implement fixed top bar (per §3.1, §6):
   * Viewport-wide bar fixed at top, spans full width
   * Functions as branch "address line" reflecting current active branch
@@ -1383,7 +1389,11 @@ The UI always renders from the in-memory store; browser storage is only a durabl
   * Set `prompt` to current user input (linear or context)
   * Send: `{ history: [...], prompt: "..." }`
 * Handle user input submission:
+  * Remove mock chat completion from Phase 2:
+    * Delete mockChatCompletion function and mockResponses array from app/page.tsx
+    * Replace with actual fetch to /api/chat endpoint
   * Immediately append user message to current node's messages array
+  * Build request payload using buildHistory() from lib/state.ts
   * Then send LLM request (user message already in state before request)
 * Handle LLM response (per §10.3):
   * Parse response: `{ header, message }`

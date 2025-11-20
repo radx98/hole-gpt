@@ -37,9 +37,9 @@ const recalcHighlightStates = (
       let msgChanged = false;
       const nextHighlights = message.highlights.map((highlight) => {
         const isActive = highlightIsActive(highlight, branch, node.id);
-        if (highlight.active === isActive) return highlight;
+        if (highlight.isActive === isActive) return highlight;
         msgChanged = true;
-        return { ...highlight, active: isActive };
+        return { ...highlight, isActive };
       });
       if (!msgChanged) return message;
       nodeChanged = true;
@@ -348,11 +348,12 @@ export const useBranchingStore = () => {
       if (parentMessageIndex === -1) return prev;
       const parentMessage = parent.messages[parentMessageIndex];
       const nextHighlight = {
+        highlightId: id(),
         childNodeId: newNodeId,
         text: selectionDraft.text,
-        start: selectionDraft.start,
-        end: selectionDraft.end,
-        active: true,
+        startOffset: selectionDraft.startOffset,
+        endOffset: selectionDraft.endOffset,
+        isActive: true,
       };
       const updatedParentMessage: Message = {
         ...parentMessage,
@@ -360,6 +361,7 @@ export const useBranchingStore = () => {
       };
       const updatedParent: Node = {
         ...parent,
+        children: [...new Set([...(parent.children ?? []), newNodeId])],
         messages: parent.messages.map((msg, idx) =>
           idx === parentMessageIndex ? updatedParentMessage : msg,
         ),
@@ -374,11 +376,12 @@ export const useBranchingStore = () => {
           parentMessageId: parentMessage.id,
           selection: {
             text: selectionDraft.text,
-            startOffset: selectionDraft.start,
-            endOffset: selectionDraft.end,
+            startOffset: selectionDraft.startOffset,
+            endOffset: selectionDraft.endOffset,
           },
         },
         messages: [childMessage],
+        children: [],
       };
 
       const updatedNodes = {
@@ -523,6 +526,7 @@ export const useBranchingStore = () => {
       header: null,
       parent: null,
       messages: [],
+      children: [],
     };
     const newSession: Session = {
       id: sessionId,
@@ -531,6 +535,8 @@ export const useBranchingStore = () => {
       nodes: {
         [rootNodeId]: rootNode,
       },
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
     };
     setState((prev) => ({
       ...prev,

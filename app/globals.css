@@ -73,3 +73,48 @@ body {
   border-radius: 0.5rem;
   overflow-x: auto;
 }
+
+.branch-link {
+  color: #2563eb;
+  font-weight: 500;
+  text-decoration: underline;
+  text-decoration-color: rgba(37, 99, 235, 0.5);
+  text-decoration-thickness: 2px;
+  text-decoration-skip-ink: auto;
+  text-underline-offset: 0.15em;
+  cursor: pointer;
+  transition:
+    color 150ms ease,
+    background-color 150ms ease,
+    text-decoration-color 150ms ease,
+    outline-color 150ms ease;
+}
+
+.branch-link:hover {
+  color: #1d4ed8;
+  text-decoration-color: rgba(29, 78, 216, 0.7);
+}
+
+.branch-link:focus-visible {
+  outline: 2px solid rgba(37, 99, 235, 0.4);
+  outline-offset: 2px;
+}
+
+.branch-link-active {
+  color: #1d4ed8;
+  background-color: rgba(191, 219, 254, 0.6);
+  text-decoration-color: rgba(29, 78, 216, 0.8);
+  border-radius: 0.15em;
+  padding: 0.05em 0.15em;
+}
+
+.branch-link-active:hover {
+  color: #1d4ed8;
+  background-color: rgba(147, 197, 253, 0.8);
+  text-decoration-color: rgba(29, 78, 216, 0.8);
+}
+
+.branch-link-active:focus-visible {
+  outline: 2px solid rgba(37, 99, 235, 0.5);
+  outline-offset: 2px;
+}

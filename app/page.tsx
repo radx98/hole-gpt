@@ -37,13 +37,6 @@ type ChatResponse = {
   message: string;
 };
 
-type HighlightChooserState = {
-  position: { x: number; y: number };
-  nodeId: string;
-  messageId: string;
-  highlights: Highlight[];
-};
-
 async function requestChatCompletion(payload: {
   history: HistoryLine[];
   prompt: string;
@@ -135,8 +128,6 @@ export default function Home() {
   );
   const [contextValue, setContextValue] = useState("");
   const [isContextSending, setIsContextSending] = useState(false);
-  const [highlightChooser, setHighlightChooser] =
-    useState<HighlightChooserState | null>(null);
   const contextInputRef = useRef<HTMLTextAreaElement | null>(null);
   const hasMessageSelectionRef = useRef(false);
   const columnsContainerRef = useRef<HTMLDivElement | null>(null);
@@ -164,16 +155,6 @@ export default function Home() {
       }
     },
     [],
-  );
-  const dismissHighlightChooser = useCallback(() => {
-    setHighlightChooser(null);
-  }, []);
-  const requestHighlightChooser = useCallback(
-    (payload: HighlightChooserState) => {
-      clearContextSelection();
-      setHighlightChooser(payload);
-    },
-    [clearContextSelection],
   );
   const findMessageElement = useCallback((node: Node | null) => {
     let current: Node | null =
@@ -225,20 +206,45 @@ export default function Home() {
         clearContextSelection();
         return;
       }
+      const activeNode = session?.nodes[nodeId] ?? null;
+      const activeMessage =
+        activeNode?.messages.find((message) => message.id === messageId) ?? null;
+      if (!activeMessage) {
+        clearContextSelection();
+        return;
+      }
       const cloned = range.cloneRange();
       cloned.selectNodeContents(startMessage);
       cloned.setEnd(range.startContainer, range.startOffset);
-      const startOffset = cloned.toString().length;
+      const rawStartOffset = cloned.toString().length;
       const text = range.toString();
-      const endOffset = startOffset + text.length;
+      const rawEndOffset = rawStartOffset + text.length;
+      const canonicalStartOffset = normalizeDomOffset(
+        rawStartOffset,
+        activeMessage.highlights,
+      );
+      const canonicalEndOffset = normalizeDomOffset(
+        rawEndOffset,
+        activeMessage.highlights,
+      );
+      if (
+        hasSelectionIntersection(
+          canonicalStartOffset,
+          canonicalEndOffset,
+          activeMessage.highlights,
+        )
+      ) {
+        clearContextSelection();
+        return;
+      }
       const rect = range.getBoundingClientRect();
       hasMessageSelectionRef.current = true;
       setSelectionDraft({
         nodeId,
         messageId,
         text,
-        startOffset,
-        endOffset,
+        startOffset: canonicalStartOffset,
+        endOffset: canonicalEndOffset,
         rect,
       });
       setContextValue("");
@@ -248,7 +254,7 @@ export default function Home() {
     return () => {
       document.removeEventListener("selectionchange", handleSelectionChange);
     };
-  }, [clearContextSelection, findMessageElement]);
+  }, [clearContextSelection, findMessageElement, session]);
 
   useEffect(() => {
     clearContextSelection({ removeDomSelection: true });
@@ -498,11 +504,10 @@ export default function Home() {
 
   const handleHighlightActivate = useCallback(
     (highlight: Highlight) => {
-      dismissHighlightChooser();
       focusNode(highlight.childNodeId);
       clearContextSelection();
     },
-    [clearContextSelection, dismissHighlightChooser, focusNode],
+    [clearContextSelection, focusNode],
   );
 
   const handleColumnFocus = useCallback(
@@ -584,7 +589,6 @@ export default function Home() {
                 errorMessage={isCurrentColumn ? errorMessage : null}
                 onSubmit={handleSubmit}
                 onHighlightClick={handleHighlightActivate}
-                onRequestHighlightChooser={requestHighlightChooser}
                 onFocusColumn={() => handleColumnFocus(node.id)}
                 registerScrollContainer={registerScrollContainer}
               />
@@ -621,7 +625,7 @@ export default function Home() {
       <div className="flex flex-1 min-h-0 overflow-y-hidden pt-16">
         <div className="flex h-full min-h-0 w-full flex-col border-t border-zinc-200 bg-white">
           <div
-            className="flex h-full min-h-0 w-full overflow-x-auto px-4 py-6 sm:px-12"
+            className="flex h-full min-h-0 w-full overflow-x-auto"
             ref={columnsContainerRef}
           >
             {columnContent}
@@ -636,12 +640,6 @@ export default function Home() {
         disabled={isContextSending || !contextValue.trim().length}
         inputRef={contextInputRef}
         onCancel={clearContextSelection}
-      />
-      <HighlightChooserOverlay
-        chooser={highlightChooser}
-        session={session}
-        onSelect={handleHighlightActivate}
-        onClose={dismissHighlightChooser}
       />
     </div>
   );
@@ -823,7 +821,6 @@ interface ColumnViewProps {
   setInputValue: (value: string) => void;
   onSubmit: () => void;
   onHighlightClick: (highlight: Highlight) => void;
-  onRequestHighlightChooser: (payload: HighlightChooserState) => void;
   onFocusColumn: () => void;
   registerScrollContainer: (nodeId: string, element: HTMLDivElement | null) => void;
 }
@@ -839,7 +836,6 @@ function ColumnView({
   setInputValue,
   onSubmit,
   onHighlightClick,
-  onRequestHighlightChooser,
   onFocusColumn,
   registerScrollContainer,
 }: ColumnViewProps) {
@@ -853,7 +849,7 @@ function ColumnView({
   );
   return (
     <section
-      className="relative flex h-full min-h-0 w-full max-w-3xl flex-shrink-0 flex-col bg-white shadow-[0_20px_60px_rgba(15,23,42,0.06)] transition-opacity"
+      className="relative flex h-full min-h-0 w-full max-w-xl flex-shrink-0 flex-col bg-white shadow-[0_20px_60px_rgba(15,23,42,0.06)] transition-opacity"
       style={{ zIndex: node.depth, opacity: isCurrent ? 1 : 0.85 }}
       onClick={onFocusColumn}
     >
@@ -862,16 +858,16 @@ function ColumnView({
           className="flex h-full flex-col overflow-y-auto"
           ref={scrollContainerRef}
         >
-          <div className="sticky top-0 border-b border-zinc-200 bg-white px-6 py-6">
-            {header ? (
-              <h3 className="text-2xl font-semibold leading-tight text-zinc-900">
-                {header}
-              </h3>
-            ) : (
-              <div className="h-7 w-64 rounded-md bg-zinc-100" />
-            )}
-          </div>
           <div className="flex-1 px-6 pb-40 pt-6">
+            <div className="mb-8">
+              {header ? (
+                <h3 className="text-2xl font-semibold leading-tight text-zinc-900">
+                  {header}
+                </h3>
+              ) : (
+                <div className="h-7 w-64 rounded-md bg-zinc-100" />
+              )}
+            </div>
             {showEmptyState ? (
               <EmptyState />
             ) : (
@@ -879,7 +875,6 @@ function ColumnView({
                 nodeId={node.id}
                 messages={messages}
                 onHighlightClick={onHighlightClick}
-                onRequestHighlightChooser={onRequestHighlightChooser}
               />
             )}
           </div>
@@ -916,12 +911,10 @@ function MessageList({
   nodeId,
   messages,
   onHighlightClick,
-  onRequestHighlightChooser,
 }: {
   nodeId: string;
   messages: Message[];
   onHighlightClick: (highlight: Highlight) => void;
-  onRequestHighlightChooser: (payload: HighlightChooserState) => void;
 }) {
   return (
     <div className="flex flex-col gap-6">
@@ -931,7 +924,6 @@ function MessageList({
           nodeId={nodeId}
           message={message}
           onHighlightClick={onHighlightClick}
-          onRequestHighlightChooser={onRequestHighlightChooser}
         />
       ))}
     </div>
@@ -942,51 +934,70 @@ type MessageBubbleProps = {
   nodeId: string;
   message: Message;
   onHighlightClick: (highlight: Highlight) => void;
-  onRequestHighlightChooser: (payload: HighlightChooserState) => void;
 };
 
 function MessageBubble({
   nodeId,
   message,
   onHighlightClick,
-  onRequestHighlightChooser,
 }: MessageBubbleProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const highlightRects = useHighlightRects(containerRef, message);
-  const handleMouseUp = useCallback(
-    (event: React.MouseEvent<HTMLDivElement>) => {
-      if (!message.highlights?.length) return;
-      const selection =
-        typeof window !== "undefined" ? window.getSelection() : null;
-      if (selection && selection.toString().length > 0) return;
-      const container = containerRef.current;
-      if (!container) return;
-      const offset = resolveTextOffsetFromPoint(
-        container,
-        event.clientX,
-        event.clientY,
-      );
-      if (offset == null) return;
-      const overlapping = message.highlights.filter(
-        (highlight) =>
-          offset >= highlight.startOffset && offset < highlight.endOffset,
-      );
-      if (!overlapping.length) return;
-      event.preventDefault();
-      event.stopPropagation();
-      if (overlapping.length > 1 && overlapping.some((item) => item.isActive)) {
-        onRequestHighlightChooser({
-          nodeId,
-          messageId: message.id,
-          highlights: overlapping,
-          position: { x: event.clientX, y: event.clientY },
-        });
+  useLayoutEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    if (!message.highlights?.length) return;
+    const sorted = [...message.highlights].sort(
+      (a, b) => b.startOffset - a.startOffset,
+    );
+    const cleanupTargets: {
+      link: HTMLAnchorElement;
+      handler: (event: MouseEvent) => void;
+      originalText: string;
+    }[] = [];
+
+    sorted.forEach((highlight) => {
+      const start = resolveTextNodePosition(container, highlight.startOffset);
+      const end = resolveTextNodePosition(container, highlight.endOffset);
+      if (!start || !end) {
         return;
       }
-      onHighlightClick(overlapping[0]);
-    },
-    [message.highlights, message.id, nodeId, onHighlightClick, onRequestHighlightChooser],
-  );
+      const range = document.createRange();
+      range.setStart(start.node, start.offset);
+      range.setEnd(end.node, end.offset);
+      const originalText = range.toString();
+      const displayText =
+        highlight.text && highlight.text.length > 0
+          ? highlight.text
+          : originalText;
+      const link = document.createElement("a");
+      link.href = "#";
+      link.dataset.highlightId = highlight.highlightId;
+      link.dataset.childNodeId = highlight.childNodeId;
+      link.className = highlight.isActive
+        ? "branch-link branch-link-active"
+        : "branch-link";
+      link.textContent = displayText;
+      const handler = (event: MouseEvent) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onHighlightClick(highlight);
+      };
+      link.addEventListener("click", handler);
+      range.deleteContents();
+      range.insertNode(link);
+      cleanupTargets.push({ link, handler, originalText });
+    });
+
+    return () => {
+      cleanupTargets.forEach(({ link, handler, originalText }) => {
+        link.removeEventListener("click", handler);
+        if (link.isConnected) {
+          const textNode = document.createTextNode(originalText);
+          link.replaceWith(textNode);
+        }
+      });
+    };
+  }, [message.highlights, message.text, onHighlightClick]);
   const isUser = message.role === "user";
   const wrapperClasses = isUser
     ? "max-w-[80%] rounded-md bg-zinc-100 px-4 py-3 text-sm text-zinc-900"
@@ -998,116 +1009,53 @@ function MessageBubble({
         ref={containerRef}
         data-node-id={nodeId}
         data-message-id={message.id}
-        onMouseUp={handleMouseUp}
         className={`relative ${wrapperClasses}`}
       >
         <Markdown content={message.text} />
-        {highlightRects.length > 0 ? (
-          <div className="pointer-events-none absolute inset-0">
-            {highlightRects.map((item) =>
-              item.rects.map((rect, rectIndex) => (
-                <span
-                  key={`${item.highlight.highlightId}-${rectIndex}`}
-                  aria-hidden
-                  className={`absolute rounded-sm ${
-                    item.highlight.isActive
-                      ? "bg-amber-300/70"
-                      : "bg-amber-100/70"
-                  }`}
-                  style={{
-                    left: `${rect.left}px`,
-                    top: `${rect.top}px`,
-                    width: `${rect.width}px`,
-                    height: `${rect.height}px`,
-                  }}
-                />
-              )),
-            )}
-          </div>
-        ) : null}
       </div>
     </div>
   );
 }
 
-type HighlightRectShape = {
-  highlight: Highlight;
-  rects: { left: number; top: number; width: number; height: number }[];
+const hasSelectionIntersection = (
+  startOffset: number,
+  endOffset: number,
+  highlights?: Highlight[],
+) => {
+  if (!highlights?.length) return false;
+  return highlights.some(
+    (highlight) =>
+      startOffset < highlight.endOffset && endOffset > highlight.startOffset,
+  );
 };
 
-function useHighlightRects(
-  containerRef: React.RefObject<HTMLDivElement>,
-  message: Message,
-): HighlightRectShape[] {
-  const [geometries, setGeometries] = useState<HighlightRectShape[]>([]);
-
-  useLayoutEffect(() => {
-    let frame: number | null = null;
-    const scheduleUpdate = () => {
-      if (frame) cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => {
-        const target = containerRef.current;
-        if (!target || !message.highlights?.length) {
-          setGeometries([]);
-          return;
-        }
-        const containerRect = target.getBoundingClientRect();
-        const next: HighlightRectShape[] = [];
-        message.highlights.forEach((highlight) => {
-          const rects = buildHighlightRects(target, highlight, containerRect);
-          if (rects && rects.length > 0) {
-            next.push({ highlight, rects });
-          }
-        });
-        setGeometries(next);
-      });
-    };
-
-    if (!containerRef.current || !message.highlights?.length) {
-      scheduleUpdate();
-      return () => {
-        if (frame) cancelAnimationFrame(frame);
-      };
+const normalizeDomOffset = (
+  domOffset: number,
+  highlights?: Highlight[],
+): number => {
+  if (!highlights?.length) return domOffset;
+  const ordered = [...highlights].sort(
+    (a, b) => a.startOffset - b.startOffset,
+  );
+  let delta = 0;
+  for (const highlight of ordered) {
+    const originalLength = highlight.endOffset - highlight.startOffset;
+    const displayLength =
+      highlight.text && highlight.text.length > 0
+        ? highlight.text.length
+        : originalLength;
+    const domStart = highlight.startOffset + delta;
+    const domEnd = domStart + displayLength;
+    if (domOffset < domStart) {
+      return domOffset - delta;
     }
-
-    const resizeObserver =
-      typeof ResizeObserver !== "undefined"
-        ? new ResizeObserver(() => scheduleUpdate())
-        : null;
-    if (resizeObserver && containerRef.current) {
-      resizeObserver.observe(containerRef.current);
+    if (domOffset < domEnd) {
+      const relative = domOffset - domStart;
+      return highlight.startOffset + Math.min(relative, originalLength);
     }
-    const handleResize = () => scheduleUpdate();
-    window.addEventListener("resize", handleResize);
-    scheduleUpdate();
-    return () => {
-      if (frame) cancelAnimationFrame(frame);
-      if (resizeObserver) resizeObserver.disconnect();
-      window.removeEventListener("resize", handleResize);
-    };
-  }, [containerRef, message.highlights, message.text]);
-
-  return geometries;
-}
-
-const buildHighlightRects = (
-  container: HTMLElement,
-  highlight: Highlight,
-  containerRect: DOMRect,
-): { left: number; top: number; width: number; height: number }[] | null => {
-  const start = resolveTextNodePosition(container, highlight.startOffset);
-  const end = resolveTextNodePosition(container, highlight.endOffset);
-  if (!start || !end) return null;
-  const range = document.createRange();
-  range.setStart(start.node, start.offset);
-  range.setEnd(end.node, end.offset);
-  const rects = Array.from(range.getClientRects()).map((rect) => ({
-    left: rect.left - containerRect.left,
-    top: rect.top - containerRect.top,
-    width: rect.width,
-    height: rect.height,
-  }));
-  return rects;
+    delta += displayLength - originalLength;
+  }
+  return domOffset - delta;
 };
 
 const resolveTextNodePosition = (
@@ -1136,37 +1084,6 @@ const resolveTextNodePosition = (
     return { node: lastText, offset: lastText.textContent?.length ?? 0 };
   }
   return null;
-};
-
-const resolveTextOffsetFromPoint = (
-  container: HTMLElement,
-  clientX: number,
-  clientY: number,
-): number | null => {
-  const doc = container.ownerDocument || document;
-  const anyDoc = doc as Document & {
-    caretRangeFromPoint?: (x: number, y: number) => Range | null;
-    caretPositionFromPoint?: (
-      x: number,
-      y: number,
-    ) => { offsetNode: Node; offset: number } | null;
-  };
-  let range: Range | null = null;
-  if (typeof anyDoc.caretRangeFromPoint === "function") {
-    range = anyDoc.caretRangeFromPoint(clientX, clientY);
-  } else if (typeof anyDoc.caretPositionFromPoint === "function") {
-    const position = anyDoc.caretPositionFromPoint(clientX, clientY);
-    if (position) {
-      range = doc.createRange();
-      range.setStart(position.offsetNode, position.offset);
-      range.collapse(true);
-    }
-  }
-  if (!range || !container.contains(range.startContainer)) return null;
-  const preRange = doc.createRange();
-  preRange.selectNodeContents(container);
-  preRange.setEnd(range.startContainer, range.startOffset);
-  return preRange.toString().length;
 };
 
 const measureSelectionRect = (
@@ -1347,87 +1264,5 @@ function ContextInputOverlay({
         </button>
       </div>
     </form>
-  );
-}
-
-type HighlightChooserOverlayProps = {
-  chooser: HighlightChooserState | null;
-  session: Session | null;
-  onSelect: (highlight: Highlight) => void;
-  onClose: () => void;
-};
-
-function HighlightChooserOverlay({
-  chooser,
-  session,
-  onSelect,
-  onClose,
-}: HighlightChooserOverlayProps) {
-  useEffect(() => {
-    if (!chooser) return;
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        onClose();
-      }
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [chooser, onClose]);
-
-  if (!chooser) return null;
-  const options = chooser.highlights.map((highlight) => {
-    const node = session?.nodes[highlight.childNodeId] ?? null;
-    const rawHeader = node?.header?.trim() ?? "";
-    const title = rawHeader.length > 0 ? rawHeader : "Untitled Column";
-    return {
-      highlight,
-      title,
-    };
-  });
-
-  return (
-    <div className="pointer-events-none fixed inset-0 z-30">
-      <div
-        className="absolute inset-0 pointer-events-auto"
-        onPointerDown={onClose}
-        aria-hidden
-      />
-      <div
-        className="pointer-events-auto absolute"
-        style={{
-          left: chooser.position.x,
-          top: chooser.position.y,
-          transform: "translate(-50%, calc(-100% - 12px))",
-        }}
-      >
-        <div className="min-w-[220px] rounded-md border border-zinc-200 bg-white shadow-xl">
-          <div className="border-b border-zinc-100 px-3 py-2">
-            <p className="text-xs font-semibold uppercase tracking-[0.25em] text-zinc-500">
-              Choose branch
-            </p>
-          </div>
-          <ul className="py-1">
-            {options.map((option) => (
-              <li key={option.highlight.highlightId}>
-                <button
-                  type="button"
-                  className="flex w-full flex-col gap-0.5 px-3 py-2 text-left text-sm text-zinc-800 hover:bg-zinc-50"
-                  onClick={() => onSelect(option.highlight)}
-                >
-                  <span className="font-medium text-zinc-900">
-                    {option.title}
-                  </span>
-                  <span className="text-xs text-zinc-500">
-                    “{option.highlight.text.slice(0, 80)}”
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        </div>
-      </div>
-    </div>
   );
 }

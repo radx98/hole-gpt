@@ -621,7 +621,7 @@ export default function Home() {
       <div className="flex flex-1 min-h-0 overflow-y-hidden pt-16">
         <div className="flex h-full min-h-0 w-full flex-col border-t border-zinc-200 bg-white">
           <div
-            className="flex h-full min-h-0 w-full overflow-x-auto px-4 py-6 sm:px-12"
+            className="flex h-full min-h-0 w-full overflow-x-auto"
             ref={columnsContainerRef}
           >
             {columnContent}
@@ -853,7 +853,7 @@ function ColumnView({
   );
   return (
     <section
-      className="relative flex h-full min-h-0 w-full max-w-3xl flex-shrink-0 flex-col bg-white shadow-[0_20px_60px_rgba(15,23,42,0.06)] transition-opacity"
+      className="relative flex h-full min-h-0 w-full max-w-xl flex-shrink-0 flex-col bg-white shadow-[0_20px_60px_rgba(15,23,42,0.06)] transition-opacity"
       style={{ zIndex: node.depth, opacity: isCurrent ? 1 : 0.85 }}
       onClick={onFocusColumn}
     >

@@ -54,9 +54,10 @@ type BranchingContextValue = {
   deleteSession: (sessionId: string) => void;
   setActiveSession: (sessionId: string) => void;
   setActiveBranch: (branch: string[]) => void;
+  setCurrentNodeId: (nodeId: string) => void;
   focusNode: (nodeId: string) => void;
   appendMessage: (nodeId: string, message: Message) => void;
-  createChildNode: (input: CreateChildNodeInput) => string | null;
+  createChildNode: (input: CreateChildNodeInput) => string;
   setNodeHeader: (nodeId: string, header: string | null) => void;
 };
 
@@ -214,6 +215,23 @@ export const BranchingProvider = ({ children }: { children: ReactNode }) => {
     });
   }, []);
 
+  const setCurrentNodeId = useCallback((nodeId: string) => {
+    dispatch({
+      type: "UPDATE",
+      updater: (previous) => {
+        const session = getActiveSession(previous);
+        if (!session) return previous;
+        if (!session.nodes[nodeId]) return previous;
+        if (!previous.activeBranchNodeIds.includes(nodeId)) return previous;
+        if (previous.currentNodeId === nodeId) return previous;
+        return {
+          ...previous,
+          currentNodeId: nodeId,
+        };
+      },
+    });
+  }, []);
+
   const focusNode = useCallback((nodeId: string) => {
     dispatch({
       type: "UPDATE",
@@ -257,8 +275,10 @@ export const BranchingProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   const createChildNode = useCallback(
-    (input: CreateChildNodeInput): string | null => {
-      let newNodeId: string | null = null;
+    (input: CreateChildNodeInput): string => {
+      // Generate the child ID BEFORE dispatch so we can return it synchronously
+      const childId = id("node");
+
       dispatch({
         type: "UPDATE",
         updater: (previous) => {
@@ -273,8 +293,6 @@ export const BranchingProvider = ({ children }: { children: ReactNode }) => {
           );
           if (parentMessageIndex === -1) return previous;
           const parentMessage = parent.messages[parentMessageIndex];
-          const childId = id("node");
-          newNodeId = childId;
           const highlight = {
             highlightId: id("highlight"),
             childNodeId: childId,
@@ -331,7 +349,8 @@ export const BranchingProvider = ({ children }: { children: ReactNode }) => {
           };
         },
       });
-      return newNodeId;
+
+      return childId;
     },
     [],
   );
@@ -382,6 +401,7 @@ export const BranchingProvider = ({ children }: { children: ReactNode }) => {
       deleteSession,
       setActiveSession,
       setActiveBranch,
+      setCurrentNodeId,
       focusNode,
       appendMessage,
       createChildNode,
@@ -393,6 +413,7 @@ export const BranchingProvider = ({ children }: { children: ReactNode }) => {
       createSession,
       deleteSession,
       focusNode,
+      setCurrentNodeId,
       setNodeHeader,
       ready,
       setActiveBranch,

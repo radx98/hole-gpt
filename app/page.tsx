@@ -86,6 +86,7 @@ export default function Home() {
     createSession,
     deleteSession,
     setActiveSession,
+    setCurrentNodeId,
     appendMessage,
     createChildNode,
     focusNode,
@@ -95,15 +96,18 @@ export default function Home() {
     ready && state.activeSessionId
       ? state.sessions[state.activeSessionId] ?? null
       : null;
+  const activeBranchNodeIds = state.activeBranchNodeIds;
   const currentNodeId =
-    session && state.currentNodeId ? state.currentNodeId : session?.rootNodeId;
+    session && state.currentNodeId
+      ? state.currentNodeId
+      : session?.rootNodeId ?? null;
   const currentNode = currentNodeId ? session?.nodes[currentNodeId] ?? null : null;
   const branchNodes = useMemo(() => {
     if (!session) return [];
-    return state.activeBranchNodeIds
+    return activeBranchNodeIds
       .map((nodeId) => session.nodes[nodeId])
       .filter((node): node is SessionNode => Boolean(node));
-  }, [session, state.activeBranchNodeIds]);
+  }, [session, activeBranchNodeIds]);
   const [inputValue, setInputValue] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -295,20 +299,17 @@ export default function Home() {
       initialMessage: userMessage,
     });
 
-    if (!newNodeId) {
-      setIsContextSending(false);
-      return;
-    }
-
     const historyBase = buildHistory(state, branchPrefix);
-    const requestHistory =
+    const historyWithBranch =
       selection.text.trim().length > 0
         ? [...historyBase, { role: "user", text: branchNote(selection.text) }]
         : historyBase;
 
+    setErrorMessage(null);
+
     try {
       const response = await requestChatCompletion({
-        history: requestHistory,
+        history: historyWithBranch,
         prompt,
       });
       const assistantMessage: Message = {
@@ -347,27 +348,51 @@ export default function Home() {
     [clearContextSelection, focusNode],
   );
 
+  const handleColumnFocus = useCallback(
+    (nodeId: string) => {
+      if (!session) return;
+      if (!activeBranchNodeIds.includes(nodeId)) return;
+      if (currentNodeId === nodeId) return;
+      setCurrentNodeId(nodeId);
+    },
+    [session, activeBranchNodeIds, setCurrentNodeId, currentNodeId],
+  );
+
   const columnContent =
-    ready && session && currentNode ? (
-      <RootColumn
-        node={currentNode}
-        isSending={isSending}
-        messages={currentNode.messages}
-        onSubmit={handleSubmit}
-        inputValue={inputValue}
-        setInputValue={setInputValue}
-        canSubmit={canSubmit}
-        errorMessage={errorMessage}
-        onHighlightClick={handleHighlightClick}
-      />
+    ready && session && branchNodes.length > 0 ? (
+      <div className="flex h-full min-h-0">
+        {branchNodes.map((node, index) => {
+          const isCurrentColumn = node.id === currentNodeId;
+          return (
+            <Fragment key={node.id}>
+              <ColumnView
+                node={node}
+                messages={node.messages}
+                isCurrent={isCurrentColumn}
+                isSending={isCurrentColumn ? isSending : false}
+                inputValue={inputValue}
+                setInputValue={setInputValue}
+                canSubmit={isCurrentColumn ? canSubmit : false}
+                errorMessage={isCurrentColumn ? errorMessage : null}
+                onSubmit={handleSubmit}
+                onHighlightClick={handleHighlightClick}
+                onFocusColumn={() => handleColumnFocus(node.id)}
+              />
+              {index < branchNodes.length - 1 ? (
+                <div className="h-full w-px flex-shrink-0 bg-zinc-200" aria-hidden />
+              ) : null}
+            </Fragment>
+          );
+        })}
+      </div>
     ) : (
-      <div className="flex flex-1 items-center justify-center text-sm text-zinc-400">
+      <div className="flex h-full w-full items-center justify-center text-sm text-zinc-400">
         Loading session…
       </div>
     );
 
   return (
-    <div className="flex h-full flex-col bg-white text-zinc-900">
+    <div className="flex h-full min-h-0 flex-col bg-white text-zinc-900">
       <TopBar
         session={session}
         branchNodes={branchNodes}
@@ -383,9 +408,11 @@ export default function Home() {
           createSession();
         }}
       />
-      <div className="flex flex-1 overflow-hidden pt-16">
-        <div className="flex flex-1 justify-start overflow-hidden border-t border-zinc-200 bg-white px-4 py-6 sm:px-12">
-          {columnContent}
+      <div className="flex flex-1 min-h-0 overflow-y-hidden pt-16">
+        <div className="flex h-full min-h-0 w-full flex-col border-t border-zinc-200 bg-white">
+          <div className="flex h-full min-h-0 w-full overflow-x-auto px-4 py-6 sm:px-12">
+            {columnContent}
+          </div>
         </div>
       </div>
       <ContextInputOverlay
@@ -566,9 +593,10 @@ function SessionDropdown({
   );
 }
 
-interface RootColumnProps {
+interface ColumnViewProps {
   node: SessionNode;
   messages: Message[];
+  isCurrent: boolean;
   isSending: boolean;
   inputValue: string;
   canSubmit: boolean;
@@ -576,11 +604,13 @@ interface RootColumnProps {
   setInputValue: (value: string) => void;
   onSubmit: () => void;
   onHighlightClick: (childNodeId: string) => void;
+  onFocusColumn: () => void;
 }
 
-function RootColumn({
+function ColumnView({
   node,
   messages,
+  isCurrent,
   isSending,
   inputValue,
   canSubmit,
@@ -588,12 +618,17 @@ function RootColumn({
   setInputValue,
   onSubmit,
   onHighlightClick,
-}: RootColumnProps) {
+  onFocusColumn,
+}: ColumnViewProps) {
   const showEmptyState = node.depth === 0 && messages.length === 0;
   const header = node.header;
   return (
-    <section className="relative flex h-full w-full max-w-3xl flex-col border-x border-zinc-200 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.06)]">
-      <div className="flex-1 overflow-hidden">
+    <section
+      className="relative flex h-full min-h-0 w-full max-w-3xl flex-shrink-0 flex-col bg-white shadow-[0_20px_60px_rgba(15,23,42,0.06)] transition-opacity"
+      style={{ zIndex: node.depth, opacity: isCurrent ? 1 : 0.85 }}
+      onClick={onFocusColumn}
+    >
+      <div className="flex-1 min-h-0 overflow-hidden">
         <div className="flex h-full flex-col overflow-y-auto">
           <div className="sticky top-0 border-b border-zinc-200 bg-white px-6 py-6">
             {header ? (
@@ -617,16 +652,18 @@ function RootColumn({
           </div>
         </div>
       </div>
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 px-6 pb-8">
-        <LinearInput
-          value={inputValue}
-          onChange={(value) => setInputValue(value)}
-          onSubmit={onSubmit}
-          disabled={!canSubmit}
-          isSending={isSending}
-          errorMessage={errorMessage}
-        />
-      </div>
+      {isCurrent ? (
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 px-6 pb-8">
+          <LinearInput
+            value={inputValue}
+            onChange={(value) => setInputValue(value)}
+            onSubmit={onSubmit}
+            disabled={!canSubmit}
+            isSending={isSending}
+            errorMessage={errorMessage}
+          />
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -694,6 +731,7 @@ function MessageBubble({ nodeId, message, onHighlightClick }: MessageBubbleProps
       );
       if (target) {
         event.preventDefault();
+        event.stopPropagation();
         onHighlightClick(target.childNodeId);
       }
     },

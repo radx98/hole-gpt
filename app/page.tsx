@@ -35,6 +35,13 @@ type ChatResponse = {
   message: string;
 };
 
+type HighlightChooserState = {
+  position: { x: number; y: number };
+  nodeId: string;
+  messageId: string;
+  highlights: Highlight[];
+};
+
 async function requestChatCompletion(payload: {
   history: HistoryLine[];
   prompt: string;
@@ -116,6 +123,8 @@ export default function Home() {
   );
   const [contextValue, setContextValue] = useState("");
   const [isContextSending, setIsContextSending] = useState(false);
+  const [highlightChooser, setHighlightChooser] =
+    useState<HighlightChooserState | null>(null);
   const contextInputRef = useRef<HTMLTextAreaElement | null>(null);
   const hasMessageSelectionRef = useRef(false);
   const clearContextSelection = useCallback(
@@ -132,6 +141,16 @@ export default function Home() {
       }
     },
     [],
+  );
+  const dismissHighlightChooser = useCallback(() => {
+    setHighlightChooser(null);
+  }, []);
+  const requestHighlightChooser = useCallback(
+    (payload: HighlightChooserState) => {
+      clearContextSelection();
+      setHighlightChooser(payload);
+    },
+    [clearContextSelection],
   );
   const findMessageElement = useCallback((node: Node | null) => {
     let current: Node | null =
@@ -340,12 +359,13 @@ export default function Home() {
     }
   };
 
-  const handleHighlightClick = useCallback(
-    (childNodeId: string) => {
-      focusNode(childNodeId);
+  const handleHighlightActivate = useCallback(
+    (highlight: Highlight) => {
+      dismissHighlightChooser();
+      focusNode(highlight.childNodeId);
       clearContextSelection();
     },
-    [clearContextSelection, focusNode],
+    [clearContextSelection, dismissHighlightChooser, focusNode],
   );
 
   const handleColumnFocus = useCallback(
@@ -375,7 +395,8 @@ export default function Home() {
                 canSubmit={isCurrentColumn ? canSubmit : false}
                 errorMessage={isCurrentColumn ? errorMessage : null}
                 onSubmit={handleSubmit}
-                onHighlightClick={handleHighlightClick}
+                onHighlightClick={handleHighlightActivate}
+                onRequestHighlightChooser={requestHighlightChooser}
                 onFocusColumn={() => handleColumnFocus(node.id)}
               />
               {index < branchNodes.length - 1 ? (
@@ -423,6 +444,12 @@ export default function Home() {
         disabled={isContextSending || !contextValue.trim().length}
         inputRef={contextInputRef}
         onCancel={clearContextSelection}
+      />
+      <HighlightChooserOverlay
+        chooser={highlightChooser}
+        session={session}
+        onSelect={handleHighlightActivate}
+        onClose={dismissHighlightChooser}
       />
     </div>
   );
@@ -603,7 +630,8 @@ interface ColumnViewProps {
   errorMessage: string | null;
   setInputValue: (value: string) => void;
   onSubmit: () => void;
-  onHighlightClick: (childNodeId: string) => void;
+  onHighlightClick: (highlight: Highlight) => void;
+  onRequestHighlightChooser: (payload: HighlightChooserState) => void;
   onFocusColumn: () => void;
 }
 
@@ -618,6 +646,7 @@ function ColumnView({
   setInputValue,
   onSubmit,
   onHighlightClick,
+  onRequestHighlightChooser,
   onFocusColumn,
 }: ColumnViewProps) {
   const showEmptyState = node.depth === 0 && messages.length === 0;
@@ -647,6 +676,7 @@ function ColumnView({
                 nodeId={node.id}
                 messages={messages}
                 onHighlightClick={onHighlightClick}
+                onRequestHighlightChooser={onRequestHighlightChooser}
               />
             )}
           </div>
@@ -683,10 +713,12 @@ function MessageList({
   nodeId,
   messages,
   onHighlightClick,
+  onRequestHighlightChooser,
 }: {
   nodeId: string;
   messages: Message[];
-  onHighlightClick: (childNodeId: string) => void;
+  onHighlightClick: (highlight: Highlight) => void;
+  onRequestHighlightChooser: (payload: HighlightChooserState) => void;
 }) {
   return (
     <div className="flex flex-col gap-6">
@@ -696,6 +728,7 @@ function MessageList({
           nodeId={nodeId}
           message={message}
           onHighlightClick={onHighlightClick}
+          onRequestHighlightChooser={onRequestHighlightChooser}
         />
       ))}
     </div>
@@ -705,10 +738,16 @@ function MessageList({
 type MessageBubbleProps = {
   nodeId: string;
   message: Message;
-  onHighlightClick: (childNodeId: string) => void;
+  onHighlightClick: (highlight: Highlight) => void;
+  onRequestHighlightChooser: (payload: HighlightChooserState) => void;
 };
 
-function MessageBubble({ nodeId, message, onHighlightClick }: MessageBubbleProps) {
+function MessageBubble({
+  nodeId,
+  message,
+  onHighlightClick,
+  onRequestHighlightChooser,
+}: MessageBubbleProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const highlightRects = useHighlightRects(containerRef, message);
   const handleMouseUp = useCallback(
@@ -725,17 +764,25 @@ function MessageBubble({ nodeId, message, onHighlightClick }: MessageBubbleProps
         event.clientY,
       );
       if (offset == null) return;
-      const target = message.highlights.find(
+      const overlapping = message.highlights.filter(
         (highlight) =>
           offset >= highlight.startOffset && offset < highlight.endOffset,
       );
-      if (target) {
-        event.preventDefault();
-        event.stopPropagation();
-        onHighlightClick(target.childNodeId);
+      if (!overlapping.length) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (overlapping.length > 1 && overlapping.some((item) => item.isActive)) {
+        onRequestHighlightChooser({
+          nodeId,
+          messageId: message.id,
+          highlights: overlapping,
+          position: { x: event.clientX, y: event.clientY },
+        });
+        return;
       }
+      onHighlightClick(overlapping[0]);
     },
-    [message.highlights, onHighlightClick],
+    [message.highlights, message.id, nodeId, onHighlightClick, onRequestHighlightChooser],
   );
   const isUser = message.role === "user";
   const wrapperClasses = isUser
@@ -1083,5 +1130,87 @@ function ContextInputOverlay({
         </button>
       </div>
     </form>
+  );
+}
+
+type HighlightChooserOverlayProps = {
+  chooser: HighlightChooserState | null;
+  session: Session | null;
+  onSelect: (highlight: Highlight) => void;
+  onClose: () => void;
+};
+
+function HighlightChooserOverlay({
+  chooser,
+  session,
+  onSelect,
+  onClose,
+}: HighlightChooserOverlayProps) {
+  useEffect(() => {
+    if (!chooser) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [chooser, onClose]);
+
+  if (!chooser) return null;
+  const options = chooser.highlights.map((highlight) => {
+    const node = session?.nodes[highlight.childNodeId] ?? null;
+    const rawHeader = node?.header?.trim() ?? "";
+    const title = rawHeader.length > 0 ? rawHeader : "Untitled Column";
+    return {
+      highlight,
+      title,
+    };
+  });
+
+  return (
+    <div className="pointer-events-none fixed inset-0 z-30">
+      <div
+        className="absolute inset-0 pointer-events-auto"
+        onPointerDown={onClose}
+        aria-hidden
+      />
+      <div
+        className="pointer-events-auto absolute"
+        style={{
+          left: chooser.position.x,
+          top: chooser.position.y,
+          transform: "translate(-50%, calc(-100% - 12px))",
+        }}
+      >
+        <div className="min-w-[220px] rounded-md border border-zinc-200 bg-white shadow-xl">
+          <div className="border-b border-zinc-100 px-3 py-2">
+            <p className="text-xs font-semibold uppercase tracking-[0.25em] text-zinc-500">
+              Choose branch
+            </p>
+          </div>
+          <ul className="py-1">
+            {options.map((option) => (
+              <li key={option.highlight.highlightId}>
+                <button
+                  type="button"
+                  className="flex w-full flex-col gap-0.5 px-3 py-2 text-left text-sm text-zinc-800 hover:bg-zinc-50"
+                  onClick={() => onSelect(option.highlight)}
+                >
+                  <span className="font-medium text-zinc-900">
+                    {option.title}
+                  </span>
+                  <span className="text-xs text-zinc-500">
+                    “{option.highlight.text.slice(0, 80)}”
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+    </div>
   );
 }

@@ -364,23 +364,23 @@ export const BranchingProvider = ({ children }: { children: ReactNode }) => {
         const node = session.nodes[nodeId];
         if (!node) return previous;
         const normalized = header?.trim() ?? null;
-        if (
-          node.header === normalized &&
-          (node.depth !== 0 || session.title === normalized)
-        ) {
+        const shouldUpdateHeader =
+          node.header !== normalized ||
+          (node.depth === 0 && session.title !== normalized);
+        if (!shouldUpdateHeader) {
           return previous;
         }
-        const updatedNode: Node = {
-          ...node,
-          header: normalized,
+        const nodes = {
+          ...session.nodes,
+          [nodeId]: {
+            ...node,
+            header: normalized,
+          },
         };
         const updatedSession = {
           ...session,
           title: node.depth === 0 ? normalized : session.title,
-          nodes: {
-            ...session.nodes,
-            [nodeId]: updatedNode,
-          },
+          nodes,
         };
         return {
           ...previous,

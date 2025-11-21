@@ -149,6 +149,7 @@ export default function Home() {
     },
     [],
   );
+  const hasPerformedInitialScrollRef = useRef(false);
   const clearContextSelection = useCallback(
     (options?: { removeDomSelection?: boolean }) => {
       setSelectionDraft(null);
@@ -517,11 +518,14 @@ export default function Home() {
   useLayoutEffect(() => {
     if (!ready || !branchNodes.length) return;
     if (typeof document === "undefined") return;
+    const scrollBehavior: ScrollBehavior = hasPerformedInitialScrollRef.current
+      ? "smooth"
+      : "auto";
     const container = columnsContainerRef.current;
     if (container) {
       container.scrollTo({
         left: container.scrollWidth,
-        behavior: "smooth",
+        behavior: scrollBehavior,
       });
     }
     branchNodes.forEach((node, index) => {
@@ -530,7 +534,7 @@ export default function Home() {
       if (index === branchNodes.length - 1) {
         scroller.scrollTo({
           top: scroller.scrollHeight,
-          behavior: "smooth",
+          behavior: scrollBehavior,
         });
         return;
       }
@@ -554,9 +558,12 @@ export default function Home() {
         offsetWithin - scroller.clientHeight / 2 + rect.height / 2;
       scroller.scrollTo({
         top: Math.max(targetTop, 0),
-        behavior: "smooth",
+        behavior: scrollBehavior,
       });
     });
+    if (!hasPerformedInitialScrollRef.current) {
+      hasPerformedInitialScrollRef.current = true;
+    }
   }, [branchNodes, branchSignature, ready]);
 
   const columnContent =

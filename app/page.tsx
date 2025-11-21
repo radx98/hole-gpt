@@ -16,6 +16,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useBranchingContext } from "@/lib/branching-context";
@@ -29,6 +30,7 @@ import {
   Session,
 } from "@/lib/types";
 import { branchNote, buildBranchPath, buildHistory, id } from "@/lib/state";
+import { slugify } from "@/lib/slug";
 
 type ChatResponse = {
   header: string;
@@ -93,12 +95,22 @@ export default function Home() {
     createSession,
     deleteSession,
     setActiveSession,
+    setActiveBranch,
     setCurrentNodeId,
     appendMessage,
     createChildNode,
     focusNode,
     setNodeHeader,
   } = useBranchingContext();
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const pathnameValue = pathname ?? "/";
+  const searchString = searchParams.toString();
+  const sessionParam = searchParams.get("session");
+  const nodeParam = searchParams.get("node");
+  const routeKey = `${pathnameValue}::${searchString}`;
+  const [handledRouteKey, setHandledRouteKey] = useState<string | null>(null);
   const session =
     ready && state.activeSessionId
       ? state.sessions[state.activeSessionId] ?? null
@@ -115,6 +127,10 @@ export default function Home() {
       .map((nodeId) => session.nodes[nodeId])
       .filter((node): node is SessionNode => Boolean(node));
   }, [session, activeBranchNodeIds]);
+  const branchSignature = useMemo(
+    () => branchNodes.map((node) => node.id).join("|"),
+    [branchNodes],
+  );
   const [inputValue, setInputValue] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -127,6 +143,16 @@ export default function Home() {
     useState<HighlightChooserState | null>(null);
   const contextInputRef = useRef<HTMLTextAreaElement | null>(null);
   const hasMessageSelectionRef = useRef(false);
+  const columnsContainerRef = useRef<HTMLDivElement | null>(null);
+  const columnScrollAreasRef = useRef<Record<string, HTMLDivElement | null>>(
+    {},
+  );
+  const registerScrollContainer = useCallback(
+    (nodeId: string, element: HTMLDivElement | null) => {
+      columnScrollAreasRef.current[nodeId] = element;
+    },
+    [],
+  );
   const clearContextSelection = useCallback(
     (options?: { removeDomSelection?: boolean }) => {
       setSelectionDraft(null);
@@ -230,6 +256,130 @@ export default function Home() {
   useEffect(() => {
     clearContextSelection({ removeDomSelection: true });
   }, [state.activeSessionId, state.currentNodeId, clearContextSelection]);
+
+  useEffect(() => {
+    if (!ready) return;
+    const segments = pathnameValue.split("/").filter(Boolean);
+    const rootSlug = segments[0] ?? null;
+    const endSlug = segments[1] ?? null;
+    const allSessions = Object.values(state.sessions);
+    if (!allSessions.length) return;
+
+    const sessionById =
+      sessionParam && state.sessions[sessionParam]
+        ? state.sessions[sessionParam]
+        : null;
+    let targetSession =
+      sessionById ??
+      (rootSlug
+        ? allSessions.find((candidate) => {
+            const rootNode = candidate.nodes[candidate.rootNodeId];
+            return slugify(rootNode?.header ?? null) === rootSlug;
+          }) ?? null
+        : null);
+
+    if (!targetSession) {
+      targetSession =
+        state.activeSessionId && state.sessions[state.activeSessionId]
+          ? state.sessions[state.activeSessionId]
+          : null;
+    }
+
+    if (!targetSession) {
+      if (handledRouteKey !== routeKey) {
+        setHandledRouteKey(routeKey);
+      }
+      return;
+    }
+
+    let targetNode =
+      (nodeParam && targetSession.nodes[nodeParam]) || null;
+    if (!targetNode && endSlug) {
+      targetNode =
+        Object.values(targetSession.nodes).find(
+          (node) => slugify(node.header ?? null) === endSlug,
+        ) ?? null;
+    }
+    if (!targetNode) {
+      targetNode = targetSession.nodes[targetSession.rootNodeId];
+    }
+
+    const nextBranch = buildBranchPath(targetSession, targetNode.id);
+    const branchMatches =
+      nextBranch.length === state.activeBranchNodeIds.length &&
+      nextBranch.every(
+        (id, index) => state.activeBranchNodeIds[index] === id,
+      );
+
+    if (state.activeSessionId !== targetSession.id) {
+      setActiveSession(targetSession.id);
+      return;
+    }
+
+    if (!branchMatches) {
+      setActiveBranch(nextBranch);
+      return;
+    }
+
+    if (state.currentNodeId !== targetNode.id) {
+      setCurrentNodeId(targetNode.id);
+      return;
+    }
+
+    if (handledRouteKey !== routeKey) {
+      setHandledRouteKey(routeKey);
+    }
+  }, [
+    handledRouteKey,
+    nodeParam,
+    pathnameValue,
+    ready,
+    routeKey,
+    sessionParam,
+    setActiveBranch,
+    setActiveSession,
+    setCurrentNodeId,
+    state.activeBranchNodeIds,
+    state.activeSessionId,
+    state.currentNodeId,
+    state.sessions,
+  ]);
+
+  useEffect(() => {
+    if (!ready || !session) return;
+    if (handledRouteKey !== routeKey) return;
+    const branchIds =
+      state.activeBranchNodeIds.length > 0
+        ? state.activeBranchNodeIds
+        : [session.rootNodeId];
+    const endNodeId = branchIds[branchIds.length - 1];
+    const rootNode = session.nodes[session.rootNodeId];
+    const endNode = session.nodes[endNodeId];
+    const rootSlug = slugify(rootNode?.header ?? null);
+    const endSlug =
+      endNode && endNode.id !== session.rootNodeId
+        ? slugify(endNode.header ?? null)
+        : null;
+    const targetPath = endSlug ? `/${rootSlug}/${endSlug}` : `/${rootSlug}`;
+    const params = new URLSearchParams();
+    params.set("session", session.id);
+    if (endNode) {
+      params.set("node", endNode.id);
+    }
+    const targetSearch = params.toString();
+    const nextRouteKey = `${targetPath}::${targetSearch}`;
+    if (nextRouteKey !== routeKey) {
+      const url = targetSearch ? `${targetPath}?${targetSearch}` : targetPath;
+      router.replace(url, { scroll: false });
+    }
+  }, [
+    handledRouteKey,
+    ready,
+    routeKey,
+    router,
+    session,
+    state.activeBranchNodeIds,
+  ]);
 
   const handleSubmit = async () => {
     if (!currentNode || !session) return;
@@ -378,6 +528,51 @@ export default function Home() {
     [session, activeBranchNodeIds, setCurrentNodeId, currentNodeId],
   );
 
+  useLayoutEffect(() => {
+    if (!ready || !branchNodes.length) return;
+    if (typeof document === "undefined") return;
+    const container = columnsContainerRef.current;
+    if (container) {
+      container.scrollTo({
+        left: container.scrollWidth,
+        behavior: "smooth",
+      });
+    }
+    branchNodes.forEach((node, index) => {
+      const scroller = columnScrollAreasRef.current[node.id];
+      if (!scroller) return;
+      if (index === branchNodes.length - 1) {
+        scroller.scrollTo({
+          top: scroller.scrollHeight,
+          behavior: "smooth",
+        });
+        return;
+      }
+      const nextNode = branchNodes[index + 1];
+      const parentLink = nextNode.parent;
+      if (!parentLink || parentLink.parentNodeId !== node.id) return;
+      const messageElement = document.querySelector<HTMLElement>(
+        `[data-node-id="${node.id}"][data-message-id="${parentLink.parentMessageId}"]`,
+      );
+      if (!messageElement) return;
+      const rect = measureSelectionRect(
+        messageElement,
+        parentLink.selection.startOffset,
+        parentLink.selection.endOffset,
+      );
+      if (!rect) return;
+      const scrollerRect = scroller.getBoundingClientRect();
+      const offsetWithin =
+        rect.top - scrollerRect.top + scroller.scrollTop;
+      const targetTop =
+        offsetWithin - scroller.clientHeight / 2 + rect.height / 2;
+      scroller.scrollTo({
+        top: Math.max(targetTop, 0),
+        behavior: "smooth",
+      });
+    });
+  }, [branchNodes, branchSignature, ready]);
+
   const columnContent =
     ready && session && branchNodes.length > 0 ? (
       <div className="flex h-full min-h-0">
@@ -398,6 +593,7 @@ export default function Home() {
                 onHighlightClick={handleHighlightActivate}
                 onRequestHighlightChooser={requestHighlightChooser}
                 onFocusColumn={() => handleColumnFocus(node.id)}
+                registerScrollContainer={registerScrollContainer}
               />
               {index < branchNodes.length - 1 ? (
                 <div className="h-full w-px flex-shrink-0 bg-zinc-200" aria-hidden />
@@ -431,7 +627,10 @@ export default function Home() {
       />
       <div className="flex flex-1 min-h-0 overflow-y-hidden pt-16">
         <div className="flex h-full min-h-0 w-full flex-col border-t border-zinc-200 bg-white">
-          <div className="flex h-full min-h-0 w-full overflow-x-auto px-4 py-6 sm:px-12">
+          <div
+            className="flex h-full min-h-0 w-full overflow-x-auto px-4 py-6 sm:px-12"
+            ref={columnsContainerRef}
+          >
             {columnContent}
           </div>
         </div>
@@ -633,6 +832,7 @@ interface ColumnViewProps {
   onHighlightClick: (highlight: Highlight) => void;
   onRequestHighlightChooser: (payload: HighlightChooserState) => void;
   onFocusColumn: () => void;
+  registerScrollContainer: (nodeId: string, element: HTMLDivElement | null) => void;
 }
 
 function ColumnView({
@@ -648,9 +848,16 @@ function ColumnView({
   onHighlightClick,
   onRequestHighlightChooser,
   onFocusColumn,
+  registerScrollContainer,
 }: ColumnViewProps) {
   const showEmptyState = node.depth === 0 && messages.length === 0;
   const header = node.header;
+  const scrollContainerRef = useCallback(
+    (element: HTMLDivElement | null) => {
+      registerScrollContainer(node.id, element);
+    },
+    [node.id, registerScrollContainer],
+  );
   return (
     <section
       className="relative flex h-full min-h-0 w-full max-w-3xl flex-shrink-0 flex-col bg-white shadow-[0_20px_60px_rgba(15,23,42,0.06)] transition-opacity"
@@ -658,7 +865,10 @@ function ColumnView({
       onClick={onFocusColumn}
     >
       <div className="flex-1 min-h-0 overflow-hidden">
-        <div className="flex h-full flex-col overflow-y-auto">
+        <div
+          className="flex h-full flex-col overflow-y-auto"
+          ref={scrollContainerRef}
+        >
           <div className="sticky top-0 border-b border-zinc-200 bg-white px-6 py-6">
             {header ? (
               <h3 className="text-2xl font-semibold leading-tight text-zinc-900">
@@ -964,6 +1174,20 @@ const resolveTextOffsetFromPoint = (
   preRange.selectNodeContents(container);
   preRange.setEnd(range.startContainer, range.startOffset);
   return preRange.toString().length;
+};
+
+const measureSelectionRect = (
+  container: HTMLElement,
+  startOffset: number,
+  endOffset: number,
+): DOMRect | null => {
+  const start = resolveTextNodePosition(container, startOffset);
+  const end = resolveTextNodePosition(container, endOffset);
+  if (!start || !end) return null;
+  const range = document.createRange();
+  range.setStart(start.node, start.offset);
+  range.setEnd(end.node, end.offset);
+  return range.getBoundingClientRect();
 };
 
 function Markdown({ content }: { content: string }) {

@@ -268,69 +268,75 @@ export default function Home() {
           }) ?? null
         : null;
 
-    if (!targetSession) {
-      targetSession =
-        state.activeSessionId && state.sessions[state.activeSessionId]
-          ? state.sessions[state.activeSessionId]
-          : null;
+    if (!targetSession && state.activeSessionId) {
+      targetSession = state.sessions[state.activeSessionId] ?? null;
     }
 
-    if (!targetSession) {
-      if (!routeHandled) {
+    if (!routeHandled) {
+      if (!targetSession) {
         setHandledRouteKey(routeKey);
+        return;
       }
+
+      const nodes = Object.values(targetSession.nodes);
+      const targetNode =
+        (endSlug &&
+          nodes.find((node) => slugify(node.header ?? null) === endSlug)) ||
+        targetSession.nodes[targetSession.rootNodeId];
+
+      const nextBranch = buildBranchPath(targetSession, targetNode.id);
+      const branchMatches =
+        nextBranch.length === state.activeBranchNodeIds.length &&
+        nextBranch.every(
+          (id, index) => state.activeBranchNodeIds[index] === id,
+        );
+
+      if (state.activeSessionId !== targetSession.id) {
+        setActiveSession(targetSession.id);
+        return;
+      }
+
+      if (!branchMatches) {
+        setActiveBranch(nextBranch);
+        return;
+      }
+
+      if (state.currentNodeId !== targetNode.id) {
+        setCurrentNodeId(targetNode.id);
+        return;
+      }
+
+      setHandledRouteKey(routeKey);
       return;
     }
 
-    let targetNode: SessionNode | null =
-      endSlug && endSlug.length > 0
-        ? Object.values(targetSession.nodes).find(
-            (node) => slugify(node.header ?? null) === endSlug,
-          ) ?? null
+    const activeSession =
+      state.activeSessionId ? state.sessions[state.activeSessionId] : null;
+    if (!activeSession) return;
+    const branchIds =
+      state.activeBranchNodeIds.length > 0
+        ? state.activeBranchNodeIds
+        : [activeSession.rootNodeId];
+    const endNodeId = branchIds[branchIds.length - 1];
+    const rootNode = activeSession.nodes[activeSession.rootNodeId];
+    const endNode = activeSession.nodes[endNodeId];
+    const rootSlugValue = slugify(rootNode?.header ?? null);
+    const endSlugValue =
+      endNode && endNode.id !== activeSession.rootNodeId
+        ? slugify(endNode.header ?? null)
         : null;
-
-    if (endSlug && !targetNode && routeHandled) {
-      return;
+    const targetPath = endSlugValue
+      ? `/${rootSlugValue}/${endSlugValue}`
+      : `/${rootSlugValue}`;
+    if (targetPath !== routeKey) {
+      router.replace(targetPath, { scroll: false });
     }
-
-    if (!targetNode) {
-      targetNode = targetSession.nodes[targetSession.rootNodeId];
-    }
-
-    const nextBranch = buildBranchPath(targetSession, targetNode.id);
-    const branchMatches =
-      nextBranch.length === state.activeBranchNodeIds.length &&
-      nextBranch.every(
-        (id, index) => state.activeBranchNodeIds[index] === id,
-      );
-
-    const shouldSyncFromRoute = !routeHandled;
-
-    if (!shouldSyncFromRoute) {
-      return;
-    }
-
-    if (state.activeSessionId !== targetSession.id) {
-      setActiveSession(targetSession.id);
-      return;
-    }
-
-    if (!branchMatches) {
-      setActiveBranch(nextBranch);
-      return;
-    }
-
-    if (state.currentNodeId !== targetNode.id) {
-      setCurrentNodeId(targetNode.id);
-      return;
-    }
-
-    setHandledRouteKey(routeKey);
   }, [
     handledRouteKey,
     pathnameValue,
     ready,
     routeKey,
+    router,
     setActiveBranch,
     setActiveSession,
     setCurrentNodeId,
@@ -338,34 +344,6 @@ export default function Home() {
     state.activeSessionId,
     state.currentNodeId,
     state.sessions,
-  ]);
-
-  useEffect(() => {
-    if (!ready || !session) return;
-    if (handledRouteKey !== routeKey) return;
-    const branchIds =
-      state.activeBranchNodeIds.length > 0
-        ? state.activeBranchNodeIds
-        : [session.rootNodeId];
-    const endNodeId = branchIds[branchIds.length - 1];
-    const rootNode = session.nodes[session.rootNodeId];
-    const endNode = session.nodes[endNodeId];
-    const rootSlug = slugify(rootNode?.header ?? null);
-    const endSlug =
-      endNode && endNode.id !== session.rootNodeId
-        ? slugify(endNode.header ?? null)
-        : null;
-    const targetPath = endSlug ? `/${rootSlug}/${endSlug}` : `/${rootSlug}`;
-    if (targetPath !== routeKey) {
-      router.replace(targetPath, { scroll: false });
-    }
-  }, [
-    handledRouteKey,
-    ready,
-    routeKey,
-    router,
-    session,
-    state.activeBranchNodeIds,
   ]);
 
   const handleSubmit = async () => {

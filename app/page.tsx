@@ -16,7 +16,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useBranchingContext } from "@/lib/branching-context";
@@ -104,12 +104,8 @@ export default function Home() {
   } = useBranchingContext();
   const router = useRouter();
   const pathname = usePathname();
-  const searchParams = useSearchParams();
   const pathnameValue = pathname ?? "/";
-  const searchString = searchParams.toString();
-  const sessionParam = searchParams.get("session");
-  const nodeParam = searchParams.get("node");
-  const routeKey = `${pathnameValue}::${searchString}`;
+  const routeKey = pathnameValue;
   const [handledRouteKey, setHandledRouteKey] = useState<string | null>(null);
   const session =
     ready && state.activeSessionId
@@ -259,24 +255,17 @@ export default function Home() {
 
   useEffect(() => {
     if (!ready) return;
-    const segments = pathnameValue.split("/").filter(Boolean);
-    const rootSlug = segments[0] ?? null;
-    const endSlug = segments[1] ?? null;
+    const [rootSlug, endSlug] = pathnameValue.split("/").filter(Boolean);
     const allSessions = Object.values(state.sessions);
     if (!allSessions.length) return;
 
-    const sessionById =
-      sessionParam && state.sessions[sessionParam]
-        ? state.sessions[sessionParam]
-        : null;
-    let targetSession =
-      sessionById ??
-      (rootSlug
+    let targetSession: Session | null =
+      rootSlug
         ? allSessions.find((candidate) => {
             const rootNode = candidate.nodes[candidate.rootNodeId];
             return slugify(rootNode?.header ?? null) === rootSlug;
           }) ?? null
-        : null);
+        : null;
 
     if (!targetSession) {
       targetSession =
@@ -292,14 +281,17 @@ export default function Home() {
       return;
     }
 
-    let targetNode =
-      (nodeParam && targetSession.nodes[nodeParam]) || null;
-    if (!targetNode && endSlug) {
-      targetNode =
-        Object.values(targetSession.nodes).find(
-          (node) => slugify(node.header ?? null) === endSlug,
-        ) ?? null;
+    let targetNode: SessionNode | null =
+      endSlug && endSlug.length > 0
+        ? Object.values(targetSession.nodes).find(
+            (node) => slugify(node.header ?? null) === endSlug,
+          ) ?? null
+        : null;
+
+    if (endSlug && !targetNode && handledRouteKey === routeKey) {
+      return;
     }
+
     if (!targetNode) {
       targetNode = targetSession.nodes[targetSession.rootNodeId];
     }
@@ -331,11 +323,9 @@ export default function Home() {
     }
   }, [
     handledRouteKey,
-    nodeParam,
     pathnameValue,
     ready,
     routeKey,
-    sessionParam,
     setActiveBranch,
     setActiveSession,
     setCurrentNodeId,
@@ -361,16 +351,8 @@ export default function Home() {
         ? slugify(endNode.header ?? null)
         : null;
     const targetPath = endSlug ? `/${rootSlug}/${endSlug}` : `/${rootSlug}`;
-    const params = new URLSearchParams();
-    params.set("session", session.id);
-    if (endNode) {
-      params.set("node", endNode.id);
-    }
-    const targetSearch = params.toString();
-    const nextRouteKey = `${targetPath}::${targetSearch}`;
-    if (nextRouteKey !== routeKey) {
-      const url = targetSearch ? `${targetPath}?${targetSearch}` : targetPath;
-      router.replace(url, { scroll: false });
+    if (targetPath !== routeKey) {
+      router.replace(targetPath, { scroll: false });
     }
   }, [
     handledRouteKey,

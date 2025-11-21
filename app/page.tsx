@@ -258,6 +258,7 @@ export default function Home() {
     const [rootSlug, endSlug] = pathnameValue.split("/").filter(Boolean);
     const allSessions = Object.values(state.sessions);
     if (!allSessions.length) return;
+    const routeHandled = handledRouteKey === routeKey;
 
     let targetSession: Session | null =
       rootSlug
@@ -275,7 +276,7 @@ export default function Home() {
     }
 
     if (!targetSession) {
-      if (handledRouteKey !== routeKey) {
+      if (!routeHandled) {
         setHandledRouteKey(routeKey);
       }
       return;
@@ -288,7 +289,7 @@ export default function Home() {
           ) ?? null
         : null;
 
-    if (endSlug && !targetNode && handledRouteKey === routeKey) {
+    if (endSlug && !targetNode && routeHandled) {
       return;
     }
 
@@ -302,6 +303,12 @@ export default function Home() {
       nextBranch.every(
         (id, index) => state.activeBranchNodeIds[index] === id,
       );
+
+    const shouldSyncFromRoute = !routeHandled;
+
+    if (!shouldSyncFromRoute) {
+      return;
+    }
 
     if (state.activeSessionId !== targetSession.id) {
       setActiveSession(targetSession.id);
@@ -318,9 +325,7 @@ export default function Home() {
       return;
     }
 
-    if (handledRouteKey !== routeKey) {
-      setHandledRouteKey(routeKey);
-    }
+    setHandledRouteKey(routeKey);
   }, [
     handledRouteKey,
     pathnameValue,

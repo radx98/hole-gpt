@@ -7,18 +7,28 @@ import {
   SendHorizontal,
   Trash2,
 } from "lucide-react";
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useBranchingContext } from "@/lib/branching-context";
 import { APP_NAME } from "@/lib/constants";
 import {
+  Highlight,
   HistoryLine,
   Message,
   Node as SessionNode,
+  SelectionDraft,
   Session,
 } from "@/lib/types";
-import { buildHistory, id } from "@/lib/state";
+import { branchNote, buildBranchPath, buildHistory, id } from "@/lib/state";
 
 type ChatResponse = {
   header: string;
@@ -77,6 +87,8 @@ export default function Home() {
     deleteSession,
     setActiveSession,
     appendMessage,
+    createChildNode,
+    focusNode,
     setNodeHeader,
   } = useBranchingContext();
   const session =
@@ -95,9 +107,106 @@ export default function Home() {
   const [inputValue, setInputValue] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [selectionDraft, setSelectionDraft] = useState<SelectionDraft | null>(
+    null,
+  );
+  const [contextValue, setContextValue] = useState("");
+  const [isContextSending, setIsContextSending] = useState(false);
+  const contextInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const hasMessageSelectionRef = useRef(false);
+  const clearContextSelection = useCallback(
+    (options?: { removeDomSelection?: boolean }) => {
+      setSelectionDraft(null);
+      setContextValue("");
+      const shouldRemove = options?.removeDomSelection ?? false;
+      hasMessageSelectionRef.current = false;
+      if (shouldRemove && typeof window !== "undefined") {
+        const selection = window.getSelection();
+        if (selection) {
+          selection.removeAllRanges();
+        }
+      }
+    },
+    [],
+  );
+  const findMessageElement = useCallback((node: Node | null) => {
+    let current: Node | null =
+      node instanceof HTMLElement ? node : node?.parentElement ?? null;
+    while (current) {
+      if (
+        current instanceof HTMLElement &&
+        current.dataset &&
+        current.dataset.messageId
+      ) {
+        return current;
+      }
+      current = current.parentElement;
+    }
+    return null;
+  }, []);
 
   const canSubmit =
     Boolean(currentNode) && inputValue.trim().length > 0 && !isSending;
+
+  useEffect(() => {
+    const handleSelectionChange = () => {
+      if (document.activeElement === contextInputRef.current) {
+        return;
+      }
+      const selection = typeof window !== "undefined" ? window.getSelection() : null;
+      if (!selection || selection.rangeCount === 0) {
+        clearContextSelection();
+        return;
+      }
+      const range = selection.getRangeAt(0);
+      if (
+        selection.isCollapsed ||
+        !range ||
+        !range.toString().trim().length
+      ) {
+        clearContextSelection();
+        return;
+      }
+      const startMessage = findMessageElement(range.startContainer);
+      const endMessage = findMessageElement(range.endContainer);
+      if (!startMessage || !endMessage || startMessage !== endMessage) {
+        clearContextSelection();
+        return;
+      }
+      const nodeId = startMessage.dataset.nodeId;
+      const messageId = startMessage.dataset.messageId;
+      if (!nodeId || !messageId) {
+        clearContextSelection();
+        return;
+      }
+      const cloned = range.cloneRange();
+      cloned.selectNodeContents(startMessage);
+      cloned.setEnd(range.startContainer, range.startOffset);
+      const startOffset = cloned.toString().length;
+      const text = range.toString();
+      const endOffset = startOffset + text.length;
+      const rect = range.getBoundingClientRect();
+      hasMessageSelectionRef.current = true;
+      setSelectionDraft({
+        nodeId,
+        messageId,
+        text,
+        startOffset,
+        endOffset,
+        rect,
+      });
+      setContextValue("");
+    };
+
+    document.addEventListener("selectionchange", handleSelectionChange);
+    return () => {
+      document.removeEventListener("selectionchange", handleSelectionChange);
+    };
+  }, [clearContextSelection, findMessageElement]);
+
+  useEffect(() => {
+    clearContextSelection({ removeDomSelection: true });
+  }, [state.activeSessionId, state.currentNodeId, clearContextSelection]);
 
   const handleSubmit = async () => {
     if (!currentNode || !session) return;
@@ -154,6 +263,90 @@ export default function Home() {
     }
   };
 
+  const handleContextSubmit = async () => {
+    if (!selectionDraft || !session) return;
+    const prompt = contextValue.trim();
+    if (!prompt || isContextSending) return;
+    const parentId = selectionDraft.nodeId;
+    const parentMessageId = selectionDraft.messageId;
+    const selection = {
+      text: selectionDraft.text,
+      startOffset: selectionDraft.startOffset,
+      endOffset: selectionDraft.endOffset,
+    };
+    const userMessage: Message = {
+      id: id("user"),
+      role: "user",
+      text: prompt,
+      createdAt: Date.now(),
+    };
+    const branchIndex = state.activeBranchNodeIds.indexOf(parentId);
+    const branchPrefix =
+      branchIndex >= 0
+        ? state.activeBranchNodeIds.slice(0, branchIndex + 1)
+        : buildBranchPath(session, parentId);
+    clearContextSelection();
+    setIsContextSending(true);
+
+    const newNodeId = createChildNode({
+      parentNodeId: parentId,
+      parentMessageId,
+      selection,
+      initialMessage: userMessage,
+    });
+
+    if (!newNodeId) {
+      setIsContextSending(false);
+      return;
+    }
+
+    const historyBase = buildHistory(state, branchPrefix);
+    const requestHistory =
+      selection.text.trim().length > 0
+        ? [...historyBase, { role: "user", text: branchNote(selection.text) }]
+        : historyBase;
+
+    try {
+      const response = await requestChatCompletion({
+        history: requestHistory,
+        prompt,
+      });
+      const assistantMessage: Message = {
+        id: id("assistant"),
+        role: "assistant",
+        text: response.message,
+        createdAt: Date.now(),
+      };
+      appendMessage(newNodeId, assistantMessage);
+      if (response.header) {
+        setNodeHeader(newNodeId, response.header);
+      }
+    } catch (error) {
+      const friendlyMessage =
+        error instanceof Error
+          ? error.message
+          : "The model request failed. Please try again.";
+      setErrorMessage(friendlyMessage);
+      const fallbackMessage: Message = {
+        id: id("assistant"),
+        role: "assistant",
+        text: `I couldn't fetch a response. ${friendlyMessage}`,
+        createdAt: Date.now(),
+      };
+      appendMessage(newNodeId, fallbackMessage);
+    } finally {
+      setIsContextSending(false);
+    }
+  };
+
+  const handleHighlightClick = useCallback(
+    (childNodeId: string) => {
+      focusNode(childNodeId);
+      clearContextSelection();
+    },
+    [clearContextSelection, focusNode],
+  );
+
   const columnContent =
     ready && session && currentNode ? (
       <RootColumn
@@ -165,6 +358,7 @@ export default function Home() {
         setInputValue={setInputValue}
         canSubmit={canSubmit}
         errorMessage={errorMessage}
+        onHighlightClick={handleHighlightClick}
       />
     ) : (
       <div className="flex flex-1 items-center justify-center text-sm text-zinc-400">
@@ -194,6 +388,15 @@ export default function Home() {
           {columnContent}
         </div>
       </div>
+      <ContextInputOverlay
+        selection={selectionDraft}
+        value={contextValue}
+        onChange={setContextValue}
+        onSubmit={handleContextSubmit}
+        disabled={isContextSending || !contextValue.trim().length}
+        inputRef={contextInputRef}
+        onCancel={clearContextSelection}
+      />
     </div>
   );
 }
@@ -372,6 +575,7 @@ interface RootColumnProps {
   errorMessage: string | null;
   setInputValue: (value: string) => void;
   onSubmit: () => void;
+  onHighlightClick: (childNodeId: string) => void;
 }
 
 function RootColumn({
@@ -383,6 +587,7 @@ function RootColumn({
   errorMessage,
   setInputValue,
   onSubmit,
+  onHighlightClick,
 }: RootColumnProps) {
   const showEmptyState = node.depth === 0 && messages.length === 0;
   const header = node.header;
@@ -403,7 +608,11 @@ function RootColumn({
             {showEmptyState ? (
               <EmptyState />
             ) : (
-              <MessageList messages={messages} />
+              <MessageList
+                nodeId={node.id}
+                messages={messages}
+                onHighlightClick={onHighlightClick}
+              />
             )}
           </div>
         </div>
@@ -433,33 +642,244 @@ function EmptyState() {
   );
 }
 
-function MessageList({ messages }: { messages: Message[] }) {
+function MessageList({
+  nodeId,
+  messages,
+  onHighlightClick,
+}: {
+  nodeId: string;
+  messages: Message[];
+  onHighlightClick: (childNodeId: string) => void;
+}) {
   return (
     <div className="flex flex-col gap-6">
       {messages.map((message) => (
-        <MessageBubble key={message.id} message={message} />
+        <MessageBubble
+          key={message.id}
+          nodeId={nodeId}
+          message={message}
+          onHighlightClick={onHighlightClick}
+        />
       ))}
     </div>
   );
 }
 
-function MessageBubble({ message }: { message: Message }) {
-  if (message.role === "user") {
-    return (
-      <div className="flex justify-end">
-        <div className="max-w-[80%] rounded-md bg-zinc-100 px-4 py-3 text-sm text-zinc-900">
-          <Markdown content={message.text} />
-        </div>
-      </div>
-    );
-  }
+type MessageBubbleProps = {
+  nodeId: string;
+  message: Message;
+  onHighlightClick: (childNodeId: string) => void;
+};
+
+function MessageBubble({ nodeId, message, onHighlightClick }: MessageBubbleProps) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const highlightRects = useHighlightRects(containerRef, message);
+  const handleMouseUp = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      if (!message.highlights?.length) return;
+      const selection =
+        typeof window !== "undefined" ? window.getSelection() : null;
+      if (selection && selection.toString().length > 0) return;
+      const container = containerRef.current;
+      if (!container) return;
+      const offset = resolveTextOffsetFromPoint(
+        container,
+        event.clientX,
+        event.clientY,
+      );
+      if (offset == null) return;
+      const target = message.highlights.find(
+        (highlight) =>
+          offset >= highlight.startOffset && offset < highlight.endOffset,
+      );
+      if (target) {
+        event.preventDefault();
+        onHighlightClick(target.childNodeId);
+      }
+    },
+    [message.highlights, onHighlightClick],
+  );
+  const isUser = message.role === "user";
+  const wrapperClasses = isUser
+    ? "max-w-[80%] rounded-md bg-zinc-100 px-4 py-3 text-sm text-zinc-900"
+    : "w-full text-base text-zinc-900";
 
   return (
-    <div className="w-full text-base text-zinc-900">
-      <Markdown content={message.text} />
+    <div className={`flex ${isUser ? "justify-end" : ""}`}>
+      <div
+        ref={containerRef}
+        data-node-id={nodeId}
+        data-message-id={message.id}
+        onMouseUp={handleMouseUp}
+        className={`relative ${wrapperClasses}`}
+      >
+        <Markdown content={message.text} />
+        {highlightRects.length > 0 ? (
+          <div className="pointer-events-none absolute inset-0">
+            {highlightRects.map((item) =>
+              item.rects.map((rect, rectIndex) => (
+                <span
+                  key={`${item.highlight.highlightId}-${rectIndex}`}
+                  aria-hidden
+                  className={`absolute rounded-sm ${
+                    item.highlight.isActive
+                      ? "bg-amber-300/70"
+                      : "bg-amber-100/70"
+                  }`}
+                  style={{
+                    left: `${rect.left}px`,
+                    top: `${rect.top}px`,
+                    width: `${rect.width}px`,
+                    height: `${rect.height}px`,
+                  }}
+                />
+              )),
+            )}
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }
+
+type HighlightRectShape = {
+  highlight: Highlight;
+  rects: { left: number; top: number; width: number; height: number }[];
+};
+
+function useHighlightRects(
+  containerRef: React.RefObject<HTMLDivElement>,
+  message: Message,
+): HighlightRectShape[] {
+  const [geometries, setGeometries] = useState<HighlightRectShape[]>([]);
+
+  useLayoutEffect(() => {
+    let frame: number | null = null;
+    const scheduleUpdate = () => {
+      if (frame) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const target = containerRef.current;
+        if (!target || !message.highlights?.length) {
+          setGeometries([]);
+          return;
+        }
+        const containerRect = target.getBoundingClientRect();
+        const next: HighlightRectShape[] = [];
+        message.highlights.forEach((highlight) => {
+          const rects = buildHighlightRects(target, highlight, containerRect);
+          if (rects && rects.length > 0) {
+            next.push({ highlight, rects });
+          }
+        });
+        setGeometries(next);
+      });
+    };
+
+    if (!containerRef.current || !message.highlights?.length) {
+      scheduleUpdate();
+      return () => {
+        if (frame) cancelAnimationFrame(frame);
+      };
+    }
+
+    const resizeObserver =
+      typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(() => scheduleUpdate())
+        : null;
+    if (resizeObserver && containerRef.current) {
+      resizeObserver.observe(containerRef.current);
+    }
+    const handleResize = () => scheduleUpdate();
+    window.addEventListener("resize", handleResize);
+    scheduleUpdate();
+    return () => {
+      if (frame) cancelAnimationFrame(frame);
+      if (resizeObserver) resizeObserver.disconnect();
+      window.removeEventListener("resize", handleResize);
+    };
+  }, [containerRef, message.highlights, message.text]);
+
+  return geometries;
+}
+
+const buildHighlightRects = (
+  container: HTMLElement,
+  highlight: Highlight,
+  containerRect: DOMRect,
+): { left: number; top: number; width: number; height: number }[] | null => {
+  const start = resolveTextNodePosition(container, highlight.startOffset);
+  const end = resolveTextNodePosition(container, highlight.endOffset);
+  if (!start || !end) return null;
+  const range = document.createRange();
+  range.setStart(start.node, start.offset);
+  range.setEnd(end.node, end.offset);
+  const rects = Array.from(range.getClientRects()).map((rect) => ({
+    left: rect.left - containerRect.left,
+    top: rect.top - containerRect.top,
+    width: rect.width,
+    height: rect.height,
+  }));
+  return rects;
+};
+
+const resolveTextNodePosition = (
+  container: HTMLElement,
+  targetOffset: number,
+): { node: Text; offset: number } | null => {
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+  let traversed = 0;
+  let current: Node | null = walker.nextNode();
+  let lastText: Text | null = null;
+  while (current) {
+    const textNode = current as Text;
+    const text = textNode.textContent ?? "";
+    const next = traversed + text.length;
+    if (targetOffset <= next) {
+      return {
+        node: textNode,
+        offset: targetOffset - traversed,
+      };
+    }
+    traversed = next;
+    lastText = textNode;
+    current = walker.nextNode();
+  }
+  if (lastText && targetOffset === traversed) {
+    return { node: lastText, offset: lastText.textContent?.length ?? 0 };
+  }
+  return null;
+};
+
+const resolveTextOffsetFromPoint = (
+  container: HTMLElement,
+  clientX: number,
+  clientY: number,
+): number | null => {
+  const doc = container.ownerDocument || document;
+  const anyDoc = doc as Document & {
+    caretRangeFromPoint?: (x: number, y: number) => Range | null;
+    caretPositionFromPoint?: (
+      x: number,
+      y: number,
+    ) => { offsetNode: Node; offset: number } | null;
+  };
+  let range: Range | null = null;
+  if (typeof anyDoc.caretRangeFromPoint === "function") {
+    range = anyDoc.caretRangeFromPoint(clientX, clientY);
+  } else if (typeof anyDoc.caretPositionFromPoint === "function") {
+    const position = anyDoc.caretPositionFromPoint(clientX, clientY);
+    if (position) {
+      range = doc.createRange();
+      range.setStart(position.offsetNode, position.offset);
+      range.collapse(true);
+    }
+  }
+  if (!range || !container.contains(range.startContainer)) return null;
+  const preRange = doc.createRange();
+  preRange.selectNodeContents(container);
+  preRange.setEnd(range.startContainer, range.startOffset);
+  return preRange.toString().length;
+};
 
 function Markdown({ content }: { content: string }) {
   return (
@@ -530,6 +950,100 @@ function LinearInput({
       {errorMessage ? (
         <p className="mt-2 text-sm text-red-500">{errorMessage}</p>
       ) : null}
+    </form>
+  );
+}
+
+type ContextInputOverlayProps = {
+  selection: SelectionDraft | null;
+  value: string;
+  onChange: (value: string) => void;
+  onSubmit: () => void;
+  disabled: boolean;
+  onCancel: () => void;
+  inputRef: React.RefObject<HTMLTextAreaElement>;
+};
+
+function ContextInputOverlay({
+  selection,
+  value,
+  onChange,
+  onSubmit,
+  disabled,
+  onCancel,
+  inputRef,
+}: ContextInputOverlayProps) {
+  // Don't auto-focus to preserve the text selection
+  // useEffect(() => {
+  //   if (selection && inputRef.current) {
+  //     inputRef.current.focus();
+  //   }
+  // }, [selection, inputRef]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onCancel();
+      }
+    };
+    if (!selection) return;
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [selection, onCancel]);
+
+  if (!selection) return null;
+  const rect = selection.rect;
+  const style = {
+    left: `${rect.left + rect.width / 2}px`,
+    top: `${rect.top}px`,
+  };
+
+  const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!disabled) {
+      onSubmit();
+    }
+  };
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      if (!disabled) {
+        onSubmit();
+      }
+    }
+  };
+
+  return (
+    <form
+      onSubmit={handleSubmit}
+      className="pointer-events-none fixed z-30"
+      style={{
+        ...style,
+        transform: "translate(-50%, calc(-100% - 12px))",
+      }}
+    >
+      <div className="pointer-events-auto flex min-w-[240px] max-w-sm items-end gap-2 rounded-md border border-zinc-200 bg-white px-3 py-2 shadow-xl">
+        <textarea
+          ref={inputRef}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          onKeyDown={handleKeyDown}
+          rows={1}
+          placeholder="Ask about this"
+          className="w-full resize-none border-0 bg-transparent text-sm text-zinc-900 outline-none placeholder:text-zinc-400"
+        />
+        <button
+          type="submit"
+          className="flex items-center gap-1 rounded-md bg-zinc-900 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-white disabled:cursor-not-allowed disabled:bg-zinc-400"
+          disabled={disabled}
+        >
+          Send
+          <SendHorizontal className="h-3.5 w-3.5" aria-hidden />
+        </button>
+      </div>
     </form>
   );
 }

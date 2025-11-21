@@ -12,34 +12,61 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useBranchingContext } from "@/lib/branching-context";
 import { APP_NAME } from "@/lib/constants";
-import { Message, Node as SessionNode, Session } from "@/lib/types";
-import { id } from "@/lib/state";
+import {
+  HistoryLine,
+  Message,
+  Node as SessionNode,
+  Session,
+} from "@/lib/types";
+import { buildHistory, id } from "@/lib/state";
 
-interface MockResponse {
+type ChatResponse = {
   header: string;
   message: string;
-}
+};
 
-const mockResponses = [
-  "Let's open this rabbithole together.",
-  "Here's a first angle to examine.",
-  "Here's a quick thought so we can keep digging.",
-  "Let me ground the idea before we branch.",
-];
+async function requestChatCompletion(payload: {
+  history: HistoryLine[];
+  prompt: string;
+}): Promise<ChatResponse> {
+  const response = await fetch("/api/chat", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
 
-const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  const text = await response.text();
+  let data: unknown = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      // Ignore – handled below.
+    }
+  }
 
-async function mockChatCompletion(prompt: string): Promise<MockResponse> {
-  const trimmed = prompt.trim();
-  const fallback =
-    mockResponses[Math.floor(Math.random() * mockResponses.length)];
-  await wait(650);
-  return {
-    header: "Unlabeled Rabbithole",
-    message: trimmed
-      ? `You asked about **${trimmed}**. ${fallback}`
-      : fallback,
-  };
+  if (!response.ok) {
+    const message =
+      (data &&
+        typeof data === "object" &&
+        typeof (data as { error?: string }).error === "string" &&
+        (data as { error?: string }).error) ||
+      "LLM request failed.";
+    throw new Error(message);
+  }
+
+  if (
+    !data ||
+    typeof data !== "object" ||
+    typeof (data as ChatResponse).header !== "string" ||
+    typeof (data as ChatResponse).message !== "string"
+  ) {
+    throw new Error("Malformed response from the model.");
+  }
+
+  return data as ChatResponse;
 }
 
 export default function Home() {
@@ -67,6 +94,7 @@ export default function Home() {
   }, [session, state.activeBranchNodeIds]);
   const [inputValue, setInputValue] = useState("");
   const [isSending, setIsSending] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const canSubmit =
     Boolean(currentNode) && inputValue.trim().length > 0 && !isSending;
@@ -75,7 +103,9 @@ export default function Home() {
     if (!currentNode || !session) return;
     const text = inputValue.trim();
     if (!text || isSending) return;
+    if (!state.activeBranchNodeIds.length) return;
 
+    const history = buildHistory(state, state.activeBranchNodeIds);
     const nodeId = currentNode.id;
     const userMessage: Message = {
       id: id("user"),
@@ -84,12 +114,18 @@ export default function Home() {
       createdAt: Date.now(),
     };
 
-    appendMessage(nodeId, userMessage);
+    setErrorMessage(null);
     setInputValue("");
     setIsSending(true);
+    appendMessage(nodeId, userMessage);
+
+    const shouldSetHeader = !currentNode.header;
 
     try {
-      const response = await mockChatCompletion(text);
+      const response = await requestChatCompletion({
+        history,
+        prompt: text,
+      });
       const assistantMessage: Message = {
         id: id("assistant"),
         role: "assistant",
@@ -97,14 +133,19 @@ export default function Home() {
         createdAt: Date.now(),
       };
       appendMessage(nodeId, assistantMessage);
-      if (response.header) {
+      if (shouldSetHeader && response.header) {
         setNodeHeader(nodeId, response.header);
       }
-    } catch {
+    } catch (error) {
+      const friendlyMessage =
+        error instanceof Error
+          ? error.message
+          : "The model request failed. Please try again.";
+      setErrorMessage(friendlyMessage);
       const assistantMessage: Message = {
         id: id("assistant"),
         role: "assistant",
-        text: "Something went wrong while talking to the model. Try again in a second.",
+        text: `I couldn't fetch a response. ${friendlyMessage}`,
         createdAt: Date.now(),
       };
       appendMessage(nodeId, assistantMessage);
@@ -123,6 +164,7 @@ export default function Home() {
         inputValue={inputValue}
         setInputValue={setInputValue}
         canSubmit={canSubmit}
+        errorMessage={errorMessage}
       />
     ) : (
       <div className="flex flex-1 items-center justify-center text-sm text-zinc-400">
@@ -327,6 +369,7 @@ interface RootColumnProps {
   isSending: boolean;
   inputValue: string;
   canSubmit: boolean;
+  errorMessage: string | null;
   setInputValue: (value: string) => void;
   onSubmit: () => void;
 }
@@ -337,6 +380,7 @@ function RootColumn({
   isSending,
   inputValue,
   canSubmit,
+  errorMessage,
   setInputValue,
   onSubmit,
 }: RootColumnProps) {
@@ -371,6 +415,7 @@ function RootColumn({
           onSubmit={onSubmit}
           disabled={!canSubmit}
           isSending={isSending}
+          errorMessage={errorMessage}
         />
       </div>
     </section>
@@ -432,6 +477,7 @@ interface LinearInputProps {
   onSubmit: () => void;
   disabled: boolean;
   isSending: boolean;
+  errorMessage?: string | null;
 }
 
 function LinearInput({
@@ -439,7 +485,8 @@ function LinearInput({
   onChange,
   onSubmit,
   disabled,
-  isSending
+  isSending,
+  errorMessage,
 }: LinearInputProps) {
   const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -476,10 +523,13 @@ function LinearInput({
           className="flex items-center gap-2 rounded-md bg-zinc-900 px-4 py-2 text-sm font-semibold uppercase tracking-wide text-white disabled:cursor-not-allowed disabled:bg-zinc-400"
           disabled={disabled}
         >
-          {isSending ? "Sending" : "Send"}
+          {isSending ? "Thinking..." : "Send"}
           <SendHorizontal className="h-4 w-4" aria-hidden />
         </button>
       </div>
+      {errorMessage ? (
+        <p className="mt-2 text-sm text-red-500">{errorMessage}</p>
+      ) : null}
     </form>
   );
 }

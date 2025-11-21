@@ -54,6 +54,7 @@ type BranchingContextValue = {
   deleteSession: (sessionId: string) => void;
   setActiveSession: (sessionId: string) => void;
   setActiveBranch: (branch: string[]) => void;
+  setCurrentNodeId: (nodeId: string) => void;
   focusNode: (nodeId: string) => void;
   appendMessage: (nodeId: string, message: Message) => void;
   createChildNode: (input: CreateChildNodeInput) => string | null;
@@ -209,6 +210,23 @@ export const BranchingProvider = ({ children }: { children: ReactNode }) => {
           },
           activeBranchNodeIds: branch,
           currentNodeId: branch[branch.length - 1],
+        };
+      },
+    });
+  }, []);
+
+  const setCurrentNodeId = useCallback((nodeId: string) => {
+    dispatch({
+      type: "UPDATE",
+      updater: (previous) => {
+        const session = getActiveSession(previous);
+        if (!session) return previous;
+        if (!session.nodes[nodeId]) return previous;
+        if (!previous.activeBranchNodeIds.includes(nodeId)) return previous;
+        if (previous.currentNodeId === nodeId) return previous;
+        return {
+          ...previous,
+          currentNodeId: nodeId,
         };
       },
     });
@@ -382,6 +400,7 @@ export const BranchingProvider = ({ children }: { children: ReactNode }) => {
       deleteSession,
       setActiveSession,
       setActiveBranch,
+      setCurrentNodeId,
       focusNode,
       appendMessage,
       createChildNode,
@@ -393,6 +412,7 @@ export const BranchingProvider = ({ children }: { children: ReactNode }) => {
       createSession,
       deleteSession,
       focusNode,
+      setCurrentNodeId,
       setNodeHeader,
       ready,
       setActiveBranch,

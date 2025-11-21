@@ -57,7 +57,7 @@ type BranchingContextValue = {
   setCurrentNodeId: (nodeId: string) => void;
   focusNode: (nodeId: string) => void;
   appendMessage: (nodeId: string, message: Message) => void;
-  createChildNode: (input: CreateChildNodeInput) => string | null;
+  createChildNode: (input: CreateChildNodeInput) => string;
   setNodeHeader: (nodeId: string, header: string | null) => void;
 };
 
@@ -275,8 +275,10 @@ export const BranchingProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   const createChildNode = useCallback(
-    (input: CreateChildNodeInput): string | null => {
-      let newNodeId: string | null = null;
+    (input: CreateChildNodeInput): string => {
+      // Generate the child ID BEFORE dispatch so we can return it synchronously
+      const childId = id("node");
+
       dispatch({
         type: "UPDATE",
         updater: (previous) => {
@@ -291,8 +293,6 @@ export const BranchingProvider = ({ children }: { children: ReactNode }) => {
           );
           if (parentMessageIndex === -1) return previous;
           const parentMessage = parent.messages[parentMessageIndex];
-          const childId = id("node");
-          newNodeId = childId;
           const highlight = {
             highlightId: id("highlight"),
             childNodeId: childId,
@@ -349,7 +349,8 @@ export const BranchingProvider = ({ children }: { children: ReactNode }) => {
           };
         },
       });
-      return newNodeId;
+
+      return childId;
     },
     [],
   );

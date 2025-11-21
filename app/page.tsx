@@ -299,20 +299,17 @@ export default function Home() {
       initialMessage: userMessage,
     });
 
-    if (!newNodeId) {
-      setIsContextSending(false);
-      return;
-    }
-
     const historyBase = buildHistory(state, branchPrefix);
-    const requestHistory =
+    const historyWithBranch =
       selection.text.trim().length > 0
         ? [...historyBase, { role: "user", text: branchNote(selection.text) }]
         : historyBase;
 
+    setErrorMessage(null);
+
     try {
       const response = await requestChatCompletion({
-        history: requestHistory,
+        history: historyWithBranch,
         prompt,
       });
       const assistantMessage: Message = {

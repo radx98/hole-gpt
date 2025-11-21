@@ -30,7 +30,7 @@ import {
   Session,
 } from "@/lib/types";
 import { branchNote, buildBranchPath, buildHistory, id } from "@/lib/state";
-import { slugify } from "@/lib/slug";
+import { buildNodeSlugMap, slugify } from "@/lib/slug";
 
 type ChatResponse = {
   header: string;
@@ -260,30 +260,49 @@ export default function Home() {
     if (!allSessions.length) return;
     const routeHandled = handledRouteKey === routeKey;
 
-    let targetSession: Session | null =
-      rootSlug
-        ? allSessions.find((candidate) => {
-            const rootNode = candidate.nodes[candidate.rootNodeId];
-            return slugify(rootNode?.header ?? null) === rootSlug;
-          }) ?? null
-        : null;
+    let targetSession: Session | null = null;
+    let slugMap: Record<string, string> | null = null;
 
-    if (!targetSession && state.activeSessionId) {
-      targetSession = state.sessions[state.activeSessionId] ?? null;
+    if (rootSlug) {
+      for (const candidate of allSessions) {
+        const candidateMap = buildNodeSlugMap(Object.values(candidate.nodes));
+        if (candidateMap[candidate.rootNodeId] === rootSlug) {
+          targetSession = candidate;
+          slugMap = candidateMap;
+          break;
+        }
+      }
     }
 
-    if (!routeHandled) {
-      if (!targetSession) {
-        setHandledRouteKey(routeKey);
-        return;
+    if (!targetSession && state.activeSessionId) {
+      const fallback = state.sessions[state.activeSessionId] ?? null;
+      if (fallback) {
+        targetSession = fallback;
+        slugMap = buildNodeSlugMap(Object.values(fallback.nodes));
       }
+    }
 
-      const nodes = Object.values(targetSession.nodes);
-      const targetNode =
-        (endSlug &&
-          nodes.find((node) => slugify(node.header ?? null) === endSlug)) ||
-        targetSession.nodes[targetSession.rootNodeId];
+    if (!targetSession) {
+      if (!routeHandled) {
+        setHandledRouteKey(routeKey);
+      }
+      return;
+    }
 
+    if (!slugMap) {
+      slugMap = buildNodeSlugMap(Object.values(targetSession.nodes));
+    }
+
+    const targetNodeId =
+      endSlug && slugMap
+        ? Object.keys(slugMap).find((nodeId) => slugMap![nodeId] === endSlug) ??
+          null
+        : null;
+    const targetNode =
+      (targetNodeId && targetSession.nodes[targetNodeId]) ||
+      targetSession.nodes[targetSession.rootNodeId];
+
+    if (!routeHandled) {
       const nextBranch = buildBranchPath(targetSession, targetNode.id);
       const branchMatches =
         nextBranch.length === state.activeBranchNodeIds.length &&
@@ -318,12 +337,14 @@ export default function Home() {
         ? state.activeBranchNodeIds
         : [activeSession.rootNodeId];
     const endNodeId = branchIds[branchIds.length - 1];
-    const rootNode = activeSession.nodes[activeSession.rootNodeId];
+    const slugMapActive = buildNodeSlugMap(Object.values(activeSession.nodes));
+    const rootSlugValue =
+      slugMapActive[activeSession.rootNodeId] ??
+      slugify(activeSession.nodes[activeSession.rootNodeId]?.header ?? null);
     const endNode = activeSession.nodes[endNodeId];
-    const rootSlugValue = slugify(rootNode?.header ?? null);
     const endSlugValue =
       endNode && endNode.id !== activeSession.rootNodeId
-        ? slugify(endNode.header ?? null)
+        ? slugMapActive[endNode.id] ?? slugify(endNode.header ?? null)
         : null;
     const targetPath = endSlugValue
       ? `/${rootSlugValue}/${endSlugValue}`
